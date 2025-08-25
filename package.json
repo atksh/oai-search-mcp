@@ -1,36 +1,36 @@
 {
-  "name": "o3-search-mcp",
-  "description": "MCP server that enables AI agents to perform intelligent web searches using OpenAI's o3 model with natural language queries",
-  "version": "0.0.9",
+  "name": "oai-search-mcp",
+  "description": "MCP server that enables AI agents to perform intelligent web searches using OpenAI's models with natural language queries",
+  "version": "0.0.1",
   "main": "build/index.js",
   "bin": {
-    "o3-search-mcp": "./build/index.js"
+    "oai-search-mcp": "./build/index.js"
   },
   "files": [
     "build/"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yoshiko-pg/o3-search-mcp.git"
+    "url": "git+https://github.com/atksh/oai-search-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/yoshiko-pg/o3-search-mcp/issues"
+    "url": "https://github.com/atksh/oai-search-mcp/issues"
   },
-  "homepage": "https://github.com/yoshiko-pg/o3-search-mcp#readme",
+  "homepage": "https://github.com/atksh/oai-search-mcp#readme",
   "keywords": [
     "mcp",
     "claude",
     "openai",
-    "o3",
+    "oai",
     "chatgpt",
     "llm"
   ],
-  "author": "@yoshiko-pg",
+  "author": "@atksh",
   "license": "MIT",
   "type": "module",
-  "packageManager": "pnpm@10.10.0",
+  "packageManager": "pnpm@10.15.0+sha512.486ebc259d3e999a4e8691ce03b5cac4a71cbeca39372a9b762cb500cfdf0873e2cb16abe3d951b1ee2cf012503f027b98b6584e4df22524e0c7450d9ec7aa7b",
   "scripts": {
-    "build": "tsc && chmod +x build/index.js",
+    "build": "tsc && chmod +x build/index.js && cp SYSTEM_PROMPT.md build/ || true",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
