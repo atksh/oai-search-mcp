@@ -154,6 +154,6 @@ json:
 | `REASONING_EFFORT` | Optional | `medium` | Controls the reasoning effort level<br>Values: `low`, `medium`, `high` |
 | `OPENAI_API_TIMEOUT` | Optional | `300000` | API request timeout in milliseconds<br>Example: `300000` for 5 minutes |
 | `OPENAI_MAX_RETRIES` | Optional | `3` | Maximum number of retries for failed requests<br>The SDK automatically retries on rate limits (429), server errors (5xx), and connection errors |
-| `OUTPUT_VERBOSITY` | Optional | `high` | Controls the output verbosity<br>Values: `low`, `medium`, `high` |
+| `OUTPUT_VERBOSITY` | Optional | `medium` | Controls the output verbosity<br>Values: `low`, `medium`, `high` |
 | `SYSTEM_PROMPT` | Optional | - | Custom system prompt<br>If not provided, the default system prompt will be used |
 
