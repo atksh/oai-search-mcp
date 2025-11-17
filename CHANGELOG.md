@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2025-11-17
+
+### Breaking Changes
+
+- **GPT-5.1 Only**: Removed support for multiple models. The server now exclusively uses GPT-5.1
+- **Removed `OPENAI_MODEL` environment variable**: Model is now hard-coded to `gpt-5.1`
+- **All documentation and code now in English**: Migrated from mixed language content to English-only
+
+### Added
+
+- **`none` reasoning effort option**: New low-latency mode for tasks that don't require reasoning
+  - Use `REASONING_EFFORT=none` for fastest responses on simple queries
+  - Added to both `web-search` and `web-search-batch` tools
+- **Enhanced batch output formatting**:
+  - Executive summary with statistics and query overview
+  - Improved individual result presentation with clear sections and metadata
+  - Success/failure indicators with visual markers
+  - Completion summary footer
+  - Better visual separation between results
+- **Comprehensive system prompt rewrite**:
+  - Optimized for GPT-5.1's characteristics (persistence, completeness)
+  - Clear guidelines for adaptive verbosity based on query complexity
+  - Enhanced source verification and citation instructions
+  - Structured response templates
+  - Quality checklist for consistent outputs
+
+### Changed
+
+- **Default model**: Hard-coded to `gpt-5.1` (previously configurable via `OPENAI_MODEL`)
+- **System prompt**: Completely rewritten in English based on GPT-5.1 prompting guide best practices
+  - Emphasizes persistence and completeness to counter over-conciseness
+  - Provides clear output formatting guidelines for different query complexities
+  - Includes structured response templates and quality checklists
+- **README.md**: Fully rewritten in English
+  - Focused on GPT-5.1 features and benefits
+  - Added migration guide from earlier versions
+  - Enhanced documentation of all features and configuration options
+  - Removed references to deprecated models
+- **Reasoning effort descriptions**: Updated to include `none` option with clear use case guidance
+
+### Migration Guide
+
+If you're upgrading from v0.0.x:
+
+1. Remove `OPENAI_MODEL` environment variable from your configuration
+2. Server now uses GPT-5.1 exclusively - ensure your OpenAI API key has access
+3. Consider using `REASONING_EFFORT=none` for low-latency use cases
+4. Review the new system prompt in `SYSTEM_PROMPT.md` if you use custom prompts
+5. Batch output format is enhanced - update any parsing logic if using `outputFormat: "structured"`
+
+### Technical Details
+
+- Model: GPT-5.1 with improved calibration and steerability
+- Reasoning effort: `none` | `low` | `medium` (default) | `high`
+- All internal code and comments now in English
+- Enhanced error handling and user feedback in batch operations
+
 ## [0.0.9] - 2025-08-24
 
 ### Changed

@@ -10,7 +10,7 @@ import { z } from "zod";
 // Create server instance
 const server = new McpServer({
   name: "oai-search-mcp",
-  version: "0.0.1",
+  version: "1.0.0",
 });
 
 // Helper function to safely parse integer with fallback
@@ -26,7 +26,7 @@ function parseIntWithFallback(
 // Configuration from environment variables
 const config = {
   apiKey: process.env.OPENAI_API_KEY,
-  model: process.env.OPENAI_MODEL || "gpt-5",
+  model: "gpt-5.1",
   maxRetries: parseIntWithFallback(process.env.OPENAI_MAX_RETRIES, 3),
   timeout: parseIntWithFallback(process.env.OPENAI_API_TIMEOUT, 300000),
   searchContextSize: (process.env.SEARCH_CONTEXT_SIZE || "medium") as
@@ -34,7 +34,7 @@ const config = {
     | "medium"
     | "high",
   reasoningEffort: (process.env.REASONING_EFFORT || "medium") as
-    | "minimal"
+    | "none"
     | "low"
     | "medium"
     | "high",
@@ -91,7 +91,7 @@ const openai = new OpenAI({
 async function executeSingleSearch(
   input: string,
   options?: {
-    reasoningEffort?: "minimal" | "low" | "medium" | "high";
+    reasoningEffort?: "none" | "low" | "medium" | "high";
     searchContextSize?: "low" | "medium" | "high";
     outputVerbosity?: "low" | "medium" | "high";
     outputFormatInstruction?: string;
@@ -184,10 +184,10 @@ The tool supports natural language queries and can search across documentation, 
         "Your search query or question in natural language. Examples: 'How to fix React useState error', 'Latest TypeScript 5.0 features', 'Best practices for error handling in Node.js', 'OpenAI API rate limits and pricing'.",
       ),
     reasoningEffort: z
-      .enum(["minimal", "low", "medium", "high"])
+      .enum(["none", "low", "medium", "high"])
       .optional()
       .describe(
-        "Reasoning effort level: 'minimal' (fastest, basic analysis), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (most thorough, slower). Higher values provide deeper analysis but take longer. Use 'high' for complex problems requiring comprehensive reasoning.",
+        "Reasoning effort level: 'none' (no reasoning, fastest for simple tasks), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (most thorough, slower). Higher values provide deeper analysis but take longer. Use 'none' for low-latency tasks that don't require reasoning, 'high' for complex problems requiring comprehensive reasoning.",
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -216,13 +216,13 @@ The tool supports natural language queries and can search across documentation, 
     outputFormatInstruction,
   }: {
     input: string;
-    reasoningEffort?: "minimal" | "low" | "medium" | "high" | undefined;
+    reasoningEffort?: "none" | "low" | "medium" | "high" | undefined;
     searchContextSize?: "low" | "medium" | "high" | undefined;
     outputVerbosity?: "low" | "medium" | "high" | undefined;
     outputFormatInstruction?: string | undefined;
   }) => {
     const options: {
-      reasoningEffort?: "minimal" | "low" | "medium" | "high";
+      reasoningEffort?: "none" | "low" | "medium" | "high";
       searchContextSize?: "low" | "medium" | "high";
       outputVerbosity?: "low" | "medium" | "high";
       outputFormatInstruction?: string;
@@ -273,10 +273,10 @@ Error handling: Individual query failures don't stop the batch; each query's res
       .min(1)
       .max(10),
     reasoningEffort: z
-      .enum(["minimal", "low", "medium", "high"])
+      .enum(["none", "low", "medium", "high"])
       .optional()
       .describe(
-        "Reasoning effort level applied to all queries in the batch: 'minimal' (fastest, basic analysis), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (most thorough, slower). Higher values provide deeper analysis but increase processing time for all queries.",
+        "Reasoning effort level applied to all queries in the batch: 'none' (no reasoning, fastest for simple tasks), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (most thorough, slower). Higher values provide deeper analysis but increase processing time for all queries. Use 'none' for low-latency batch tasks.",
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -312,7 +312,7 @@ Error handling: Individual query failures don't stop the batch; each query's res
     outputFormat = "structured",
   }: {
     inputs: string[];
-    reasoningEffort?: "minimal" | "low" | "medium" | "high" | undefined;
+    reasoningEffort?: "none" | "low" | "medium" | "high" | undefined;
     searchContextSize?: "low" | "medium" | "high" | undefined;
     outputVerbosity?: "low" | "medium" | "high" | undefined;
     outputFormatInstruction?: string | undefined;
@@ -321,7 +321,7 @@ Error handling: Individual query failures don't stop the batch; each query's res
     try {
       // Execute all searches in parallel with shared options
       const searchOptions: {
-        reasoningEffort?: "minimal" | "low" | "medium" | "high";
+        reasoningEffort?: "none" | "low" | "medium" | "high";
         searchContextSize?: "low" | "medium" | "high";
         outputVerbosity?: "low" | "medium" | "high";
         outputFormatInstruction?: string;
@@ -389,37 +389,100 @@ Error handling: Individual query failures don't stop the batch; each query's res
           ],
         };
       } else {
-        // Structured format: separate content blocks (default)
+        // Structured format: separate content blocks with enhanced presentation (default)
         const contentBlocks: Array<{
           type: "text";
           text: string;
         }> = [];
 
-        // Add summary header
+        // Calculate statistics
         const successCount = results.filter((r) => r.status === "fulfilled").length;
         const errorCount = results.filter((r) => r.status === "rejected").length;
+        const successRate = ((successCount / inputs.length) * 100).toFixed(1);
+
+        // Add executive summary header with enhanced formatting
+        const summaryHeader = [
+          "# 🔍 Batch Search Results",
+          "",
+          "## Overview",
+          "",
+          `- **Total Queries**: ${inputs.length}`,
+          `- **Successful**: ${successCount} ✓`,
+          errorCount > 0 ? `- **Failed**: ${errorCount} ✗` : "",
+          `- **Success Rate**: ${successRate}%`,
+          "",
+          "## Queries",
+          "",
+          inputs.map((query, idx) => `${idx + 1}. ${query}`).join("\n"),
+          "",
+          "---",
+          "",
+        ].filter(line => line !== "").join("\n");
+
         contentBlocks.push({
           type: "text",
-          text: `# Batch Search Results\n\nTotal queries: ${inputs.length}\nSuccessful: ${successCount}\nFailed: ${errorCount}\n\n---\n\n`,
+          text: summaryHeader,
         });
 
-        // Add individual results as separate blocks
+        // Add individual results with enhanced formatting
         results.forEach((result, index) => {
+          const queryNumber = index + 1;
+          const totalQueries = inputs.length;
+          
           if (result.status === "fulfilled") {
+            const resultText = [
+              `## 📋 Result ${queryNumber}/${totalQueries}`,
+              "",
+              `**Query**: ${inputs[index]}`,
+              "",
+              `**Status**: ✓ Success`,
+              "",
+              "### Response",
+              "",
+              result.value,
+              "",
+              "---",
+              "",
+            ].join("\n");
+            
             contentBlocks.push({
               type: "text",
-              text: `## Query ${index + 1}: ${inputs[index]}\n\n${result.value}\n`,
+              text: resultText,
             });
           } else {
             const errorMsg =
               result.reason instanceof Error
                 ? result.reason.message
                 : String(result.reason);
+            
+            const errorText = [
+              `## 📋 Result ${queryNumber}/${totalQueries}`,
+              "",
+              `**Query**: ${inputs[index]}`,
+              "",
+              `**Status**: ✗ Failed`,
+              "",
+              "### Error Details",
+              "",
+              `\`\`\``,
+              errorMsg,
+              `\`\`\``,
+              "",
+              "---",
+              "",
+            ].join("\n");
+            
             contentBlocks.push({
               type: "text",
-              text: `## Query ${index + 1}: ${inputs[index]}\n\n❌ Error: ${errorMsg}\n`,
+              text: errorText,
             });
           }
+        });
+
+        // Add completion footer
+        contentBlocks.push({
+          type: "text",
+          text: `## Summary\n\nCompleted ${successCount} out of ${inputs.length} queries successfully.${errorCount > 0 ? ` ${errorCount} query(ies) encountered errors.` : " All queries completed without errors."}`,
         });
 
         return {
