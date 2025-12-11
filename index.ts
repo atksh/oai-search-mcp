@@ -26,7 +26,7 @@ function parseIntWithFallback(
 // Configuration from environment variables
 const config = {
   apiKey: process.env.OPENAI_API_KEY,
-  model: "gpt-5.1",
+  model: "gpt-5.2",
   maxRetries: parseIntWithFallback(process.env.OPENAI_MAX_RETRIES, 3),
   timeout: parseIntWithFallback(process.env.OPENAI_API_TIMEOUT, 300000),
   searchContextSize: (process.env.SEARCH_CONTEXT_SIZE || "medium") as
@@ -37,7 +37,8 @@ const config = {
     | "none"
     | "low"
     | "medium"
-    | "high",
+    | "high"
+    | "xhigh",
   outputVerbosity: (process.env.OUTPUT_VERBOSITY || "medium") as
     | "low"
     | "medium"
@@ -91,7 +92,7 @@ const openai = new OpenAI({
 async function executeSingleSearch(
   input: string,
   options?: {
-    reasoningEffort?: "none" | "low" | "medium" | "high";
+    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
     searchContextSize?: "low" | "medium" | "high";
     outputVerbosity?: "low" | "medium" | "high";
     outputFormatInstruction?: string;
@@ -184,10 +185,10 @@ The tool supports natural language queries and can search across documentation, 
         "Your search query or question in natural language. Examples: 'How to fix React useState error', 'Latest TypeScript 5.0 features', 'Best practices for error handling in Node.js', 'OpenAI API rate limits and pricing'.",
       ),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high"])
+      .enum(["none", "low", "medium", "high", "xhigh"])
       .optional()
       .describe(
-        "Reasoning effort level: 'none' (no reasoning, fastest for simple tasks), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (most thorough, slower). Higher values provide deeper analysis but take longer. Use 'none' for low-latency tasks that don't require reasoning, 'high' for complex problems requiring comprehensive reasoning.",
+        "Reasoning effort level: 'none' (no reasoning, fastest), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (thorough, slower), 'xhigh' (maximum deliberation for hardest tasks). Higher values provide deeper analysis but increase latency/cost. Use 'none' for low-latency tasks, 'xhigh' only when needed.",
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -216,13 +217,13 @@ The tool supports natural language queries and can search across documentation, 
     outputFormatInstruction,
   }: {
     input: string;
-    reasoningEffort?: "none" | "low" | "medium" | "high" | undefined;
+    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | undefined;
     searchContextSize?: "low" | "medium" | "high" | undefined;
     outputVerbosity?: "low" | "medium" | "high" | undefined;
     outputFormatInstruction?: string | undefined;
   }) => {
     const options: {
-      reasoningEffort?: "none" | "low" | "medium" | "high";
+      reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
       searchContextSize?: "low" | "medium" | "high";
       outputVerbosity?: "low" | "medium" | "high";
       outputFormatInstruction?: string;
@@ -273,10 +274,10 @@ Error handling: Individual query failures don't stop the batch; each query's res
       .min(1)
       .max(10),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high"])
+      .enum(["none", "low", "medium", "high", "xhigh"])
       .optional()
       .describe(
-        "Reasoning effort level applied to all queries in the batch: 'none' (no reasoning, fastest for simple tasks), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (most thorough, slower). Higher values provide deeper analysis but increase processing time for all queries. Use 'none' for low-latency batch tasks.",
+        "Reasoning effort level applied to all queries in the batch: 'none' (fastest), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (thorough), 'xhigh' (maximum deliberation). Higher values increase processing time/cost for all queries.",
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -312,7 +313,7 @@ Error handling: Individual query failures don't stop the batch; each query's res
     outputFormat = "structured",
   }: {
     inputs: string[];
-    reasoningEffort?: "none" | "low" | "medium" | "high" | undefined;
+    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | undefined;
     searchContextSize?: "low" | "medium" | "high" | undefined;
     outputVerbosity?: "low" | "medium" | "high" | undefined;
     outputFormatInstruction?: string | undefined;
@@ -320,12 +321,12 @@ Error handling: Individual query failures don't stop the batch; each query's res
   }) => {
     try {
       // Execute all searches in parallel with shared options
-      const searchOptions: {
-        reasoningEffort?: "none" | "low" | "medium" | "high";
-        searchContextSize?: "low" | "medium" | "high";
-        outputVerbosity?: "low" | "medium" | "high";
-        outputFormatInstruction?: string;
-      } = {};
+	      const searchOptions: {
+	        reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
+	        searchContextSize?: "low" | "medium" | "high";
+	        outputVerbosity?: "low" | "medium" | "high";
+	        outputFormatInstruction?: string;
+	      } = {};
       if (reasoningEffort !== undefined)
         searchOptions.reasoningEffort = reasoningEffort;
       if (searchContextSize !== undefined)

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **GPT-5.2 Only**: Updated the hard-coded model from `gpt-5.1` to `gpt-5.2`
+- **Reasoning effort expanded**: Added `xhigh` option across configuration and tool schemas
+- **System prompt**: Refreshed guidance for GPT‑5.2 (verbosity clamps, ambiguity handling, long‑context recall)
+- **Documentation**: Updated README, package metadata, and test notes for GPT‑5.2
+
 ## [1.0.0] - 2025-11-17
 
 ### Breaking Changes

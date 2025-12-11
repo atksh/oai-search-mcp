@@ -1,21 +1,21 @@
-# oai-search-mcp (GPT-5.1)
+# oai-search-mcp (GPT-5.2)
 
-MCP server that enables AI agents to leverage OpenAI's GPT-5.1 model with powerful web search capabilities. By registering this server with any AI coding agent, the agent can autonomously consult GPT-5.1 to solve complex problems through intelligent web searches.
+MCP server that enables AI agents to leverage OpenAI's GPT-5.2 model with powerful web search capabilities. By registering this server with any AI coding agent, the agent can autonomously consult GPT-5.2 to solve complex problems through intelligent web searches.
 
-## Why GPT-5.1?
+## Why GPT-5.2?
 
-GPT-5.1 is OpenAI's latest flagship model, optimized for:
+GPT-5.2 is OpenAI's newest flagship model for enterprise and agentic workloads, optimized for:
 
-- **Better calibrated reasoning**: Consumes fewer tokens on simple queries while efficiently handling complex ones
-- **Improved steerability**: More control over personality, tone, and output formatting
-- **Low-latency option**: New `none` reasoning mode for fast responses when reasoning isn't needed
-- **Enhanced intelligence**: Superior instruction-following and better balance of speed and quality
+- **Higher accuracy & instruction adherence**: Less drift and cleaner execution on multi-step tasks
+- **Cleaner, more compact formatting**: Lower verbosity by default while staying prompt-sensitive
+- **Stronger structured reasoning & tool grounding**: Better at synthesizing across sources
+- **Agent-ready reliability**: Consistent behavior for production research flows
 
 ## Use Cases
 
 ### 🐛 When You're Stuck Debugging
 
-GPT-5.1's web search can scan GitHub issues, Stack Overflow, and documentation to find solutions for niche problems.
+GPT-5.2's web search can scan GitHub issues, Stack Overflow, and documentation to find solutions for niche problems.
 
 **Example prompts:**
 ```
@@ -40,14 +40,14 @@ Get answers from powerful web search even when documentation is scattered or inc
 
 ### 🧩 When Tackling Complex Tasks
 
-Use GPT-5.1 not just for search, but as a design consultant and problem-solving partner.
+Use GPT-5.2 not just for search, but as a design consultant and problem-solving partner.
 
 **Example prompts:**
 ```
 > I want to create a collaborative editor. Please design it and ask oai for a design review.
 ```
 
-The AI agent may autonomously decide to consult GPT-5.1 when it deems necessary, dramatically expanding the range of problems it can solve independently!
+The AI agent may autonomously decide to consult GPT-5.2 when it deems necessary, dramatically expanding the range of problems it can solve independently!
 
 ## Installation
 
@@ -77,14 +77,14 @@ Add to your MCP settings file:
     "oai-search": {
       "command": "npx",
       "args": ["oai-search-mcp"],
-      "env": {
-        "OPENAI_API_KEY": "your-api-key",
-        // Optional: low, medium, high (default: medium)
-        "SEARCH_CONTEXT_SIZE": "medium",
-        // Optional: none, low, medium, high (default: medium)
-        "REASONING_EFFORT": "medium",
-        // Optional: low, medium, high (default: medium)
-        "OUTPUT_VERBOSITY": "medium",
+	  "env": {
+	    "OPENAI_API_KEY": "your-api-key",
+	    // Optional: low, medium, high (default: medium)
+	    "SEARCH_CONTEXT_SIZE": "medium",
+	    // Optional: none, low, medium, high, xhigh (default: medium)
+	    "REASONING_EFFORT": "medium",
+	    // Optional: low, medium, high (default: medium)
+	    "OUTPUT_VERBOSITY": "medium",
         // Optional: API timeout in milliseconds (default: 300000)
         "OPENAI_API_TIMEOUT": "300000",
         // Optional: Maximum number of retries (default: 3)
@@ -149,17 +149,17 @@ claude mcp add oai \
 | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | **Yes** | - | Your OpenAI API key |
 | `SEARCH_CONTEXT_SIZE` | No | `medium` | Search context size<br>**Values**: `low`, `medium`, `high`<br>Higher values retrieve more search results for better coverage |
-| `REASONING_EFFORT` | No | `medium` | GPT-5.1 reasoning effort level<br>**Values**: `none`, `low`, `medium`, `high`<br>`none`: No reasoning, fastest (for low-latency tasks)<br>`low`: Quick analysis<br>`medium`: Balanced (recommended)<br>`high`: Most thorough, slower |
+| `REASONING_EFFORT` | No | `medium` | GPT-5.2 reasoning effort level<br>**Values**: `none`, `low`, `medium`, `high`, `xhigh`<br>`none`: No reasoning, fastest (for low-latency tasks)<br>`low`: Quick analysis<br>`medium`: Balanced (recommended)<br>`high`: Thorough, slower<br>`xhigh`: Maximum deliberation for hardest tasks |
 | `OUTPUT_VERBOSITY` | No | `medium` | Response detail level<br>**Values**: `low`, `medium`, `high`<br>`low`: Concise answers<br>`medium`: Balanced detail<br>`high`: Comprehensive with full context |
 | `OPENAI_API_TIMEOUT` | No | `300000` | API request timeout in milliseconds<br>Default: 300000 (5 minutes) |
 | `OPENAI_MAX_RETRIES` | No | `3` | Maximum retries for failed requests<br>The SDK automatically retries on rate limits (429), server errors (5xx), and connection errors |
-| `SYSTEM_PROMPT` | No | _(default)_ | Custom system prompt for response style<br>If not provided, uses the built-in prompt optimized for GPT-5.1 |
+| `SYSTEM_PROMPT` | No | _(default)_ | Custom system prompt for response style<br>If not provided, uses the built-in prompt optimized for GPT-5.2 |
 
 ## Features
 
 ### 🔍 Single Web Search
 
-Execute a single intelligent web search with GPT-5.1:
+Execute a single intelligent web search with GPT-5.2:
 
 ```typescript
 // Tool: web-search
@@ -211,34 +211,35 @@ Pre-configured prompt templates for common tasks:
 - `research-api`: Research API or library documentation
 - `explore-documentation`: Explore and understand technology documentation
 
-## GPT-5.1 Optimizations
+## GPT-5.2 Optimizations
 
-This MCP server is specifically optimized for GPT-5.1's characteristics:
+This MCP server is specifically optimized for GPT-5.2's strengths:
 
-### Persistence and Completeness
+### Disciplined Scaffolding
 
-The default system prompt emphasizes completeness to counter GPT-5.1's tendency toward over-conciseness. Responses prioritize thoroughness while maintaining relevance.
+GPT‑5.2 builds clearer intermediate structure by default. The system prompt reinforces plan‑then‑answer behavior without adding extra scope.
 
-### Adaptive Verbosity
+### Explicit Verbosity Clamps
 
-Responses automatically adapt detail level to query complexity:
-- **Simple queries**: 2-4 concise paragraphs
-- **Medium queries**: 4-8 paragraphs with structured sections
-- **Complex queries**: Comprehensive multi-section responses with examples
+GPT‑5.2 is concise by default, so the prompt sets concrete length/shape targets and respects the runtime’s `OUTPUT_VERBOSITY` instruction.
 
-### None Reasoning Mode
+### Reasoning Effort Knob
 
-Use `REASONING_EFFORT=none` for low-latency tasks that don't require deep analysis:
+Use `REASONING_EFFORT=none` for low‑latency tasks that don't require deep analysis:
 - Quick fact lookups
 - Simple documentation searches
 - Status checks
 - Straightforward questions
 
-Use `medium` or `high` for:
+Use `medium`, `high`, or `xhigh` for:
 - Complex problem solving
 - Multi-step analysis
 - Design decisions
 - Debugging difficult issues
+
+### Ambiguity & Freshness Handling
+
+The prompt instructs GPT‑5.2 to avoid hallucinating on underspecified queries, cover multiple plausible intents with assumptions, and rely on web research for time‑sensitive facts.
 
 ## Tips for Best Results
 
@@ -252,15 +253,15 @@ Use `medium` or `high` for:
 
 If you're upgrading from a version that supported multiple models (GPT-5, O3, O4-mini):
 
-1. **Remove `OPENAI_MODEL` environment variable** - GPT-5.1 is now the only supported model
-2. **Update reasoning effort** - New `none` option available for low-latency use cases
-3. **Review system prompt** - Now optimized specifically for GPT-5.1 characteristics
+1. **Remove `OPENAI_MODEL` environment variable** - GPT-5.2 is now the only supported model
+2. **Update reasoning effort** - If you previously used `minimal`, switch to `none`; `xhigh` is available for hardest tasks
+3. **Review system prompt** - Now optimized specifically for GPT-5.2 characteristics
 4. **Check batch output** - Enhanced structured format with better presentation
 
 ## Requirements
 
 - Node.js 16 or higher
-- OpenAI API key with GPT-5.1 access
+- OpenAI API key with GPT-5.2 access
 - MCP-compatible client (Claude Desktop, Claude Code, etc.)
 
 ## License
@@ -275,6 +276,6 @@ Issues and pull requests are welcome! Please see the [GitHub repository](https:/
 
 Built with:
 - [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) by Anthropic
-- [OpenAI API](https://openai.com/api/) for GPT-5.1 access
+- [OpenAI API](https://openai.com/api/) for GPT-5.2 access
 
-Optimized based on [OpenAI's GPT-5.1 Prompting Guide](https://cookbook.openai.com/examples/gpt-5/gpt-5-1_prompting_guide).
+Optimized based on [OpenAI's GPT-5.2 Prompting Guide](https://cookbook.openai.com/examples/gpt-5/gpt-5-2_prompting_guide).
