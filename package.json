@@ -1,7 +1,7 @@
 {
   "name": "oai-search-mcp",
   "description": "MCP server that enables AI agents to perform intelligent web searches using OpenAI's GPT-5.2 model with natural language queries",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "build/index.js",
   "bin": {
     "oai-search-mcp": "./build/index.js"
@@ -35,7 +35,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.2",
-    "openai": "^5.8.1",
+    "nanoid": "^5.0.0",
+    "openai": "^6.15.0",
     "zod": "^3.25.67"
   },
   "devDependencies": {

@@ -154,6 +154,12 @@ claude mcp add oai \
 | `OPENAI_API_TIMEOUT` | No | `300000` | API request timeout in milliseconds<br>Default: 300000 (5 minutes) |
 | `OPENAI_MAX_RETRIES` | No | `3` | Maximum retries for failed requests<br>The SDK automatically retries on rate limits (429), server errors (5xx), and connection errors |
 | `SYSTEM_PROMPT` | No | _(default)_ | Custom system prompt for response style<br>If not provided, uses the built-in prompt optimized for GPT-5.2 |
+| `SESSION_TTL_MS` | No | `7200000` | Session time-to-live in milliseconds (default: 2 hours) |
+| `MAX_SESSIONS` | No | `100` | Maximum number of concurrent sessions |
+| `AUTO_COMPACTION` | No | `true` | Enable automatic conversation compaction |
+| `COMPACTION_QUERY_THRESHOLD` | No | `10` | Number of queries before triggering compaction |
+| `COMPACTION_TOKEN_THRESHOLD` | No | `50000` | Token count threshold for triggering compaction |
+| `LOG_LEVEL` | No | `info` | Logging level<br>**Values**: `debug`, `info`, `warn`, `error` |
 
 ## Features
 
@@ -170,6 +176,48 @@ Execute a single intelligent web search with GPT-5.2:
   "outputVerbosity": "high"
 }
 ```
+
+**Response format (JSON):**
+```json
+{
+  "sessionId": "V1StGXR8_Z5jdHi6B-myT",
+  "result": "To optimize React rendering performance...",
+  "warning": null
+}
+```
+
+### 🔄 Session Support (Conversation Continuity)
+
+Maintain conversation context across multiple queries using session IDs:
+
+```typescript
+// First query - session auto-created
+{
+  "input": "What is React 19?"
+}
+// Response: { "sessionId": "abc123...", "result": "React 19 is..." }
+
+// Follow-up query - context preserved
+{
+  "input": "How do I upgrade from v18?",
+  "sessionId": "abc123..."
+}
+// Response: { "sessionId": "abc123...", "result": "To upgrade from React 18..." }
+```
+
+**Session behavior:**
+- **Auto-creation**: If `sessionId` is omitted, a new session is created automatically
+- **Continuation**: Pass the returned `sessionId` to continue the conversation
+- **TTL**: Sessions expire after 2 hours of inactivity (configurable via `SESSION_TTL_MS`)
+- **Invalid ID**: Returns an error if the session ID is invalid or expired
+
+### 🗜️ Automatic Compaction
+
+Long conversations are automatically compacted to manage context size:
+
+- **Query threshold**: Compacts after 10 queries (configurable via `COMPACTION_QUERY_THRESHOLD`)
+- **Token threshold**: Compacts when total tokens exceed 50,000 (configurable via `COMPACTION_TOKEN_THRESHOLD`)
+- **Graceful handling**: If compaction fails, the conversation continues with a warning
 
 ### 📦 Batch Web Search
 
@@ -248,8 +296,36 @@ The prompt instructs GPT‑5.2 to avoid hallucinating on underspecified queries,
 3. **Adjust reasoning effort**: Use `none` for speed, `high` for difficult problems
 4. **Leverage verbosity control**: Set `low` for quick answers, `high` for learning in-depth
 5. **Customize the system prompt**: Tailor response style to your team's needs
+6. **Use sessions for follow-ups**: Pass `sessionId` to ask follow-up questions without repeating context
 
 ## Migration from Earlier Versions
+
+### From v1.0.x to v1.1.0
+
+**Breaking Change**: The `web-search` tool now returns JSON instead of plain text.
+
+**Before (v1.0.x):**
+```
+To optimize React rendering performance...
+```
+
+**After (v1.1.0):**
+```json
+{
+  "sessionId": "V1StGXR8_Z5jdHi6B-myT",
+  "result": "To optimize React rendering performance...",
+  "warning": null
+}
+```
+
+**Migration steps:**
+1. Update any code that parses the response to extract `result` from the JSON
+2. Optionally use `sessionId` for conversation continuity
+3. Check for `warning` field for compaction status
+
+**Note:** The `web-search-batch` tool response format is unchanged.
+
+### From v0.x (multi-model) to v1.0.0
 
 If you're upgrading from a version that supported multiple models (GPT-5, O3, O4-mini):
 

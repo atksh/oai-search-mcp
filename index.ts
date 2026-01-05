@@ -6,6 +6,139 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { nanoid } from "nanoid";
+
+// =============================================================================
+// Logger Implementation
+// =============================================================================
+
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+class Logger {
+  private level: LogLevel;
+  private static readonly levelOrder: Record<LogLevel, number> = {
+    debug: 0,
+    info: 1,
+    warn: 2,
+    error: 3,
+  };
+
+  constructor(level: LogLevel = "info") {
+    this.level = level;
+  }
+
+  private shouldLog(level: LogLevel): boolean {
+    return Logger.levelOrder[level] >= Logger.levelOrder[this.level];
+  }
+
+  log(level: LogLevel, event: string, metadata?: Record<string, unknown>): void {
+    if (!this.shouldLog(level)) return;
+    const entry = {
+      timestamp: new Date().toISOString(),
+      level,
+      event,
+      ...metadata,
+    };
+    console.error(JSON.stringify(entry));
+  }
+
+  debug(event: string, meta?: Record<string, unknown>) {
+    this.log("debug", event, meta);
+  }
+  info(event: string, meta?: Record<string, unknown>) {
+    this.log("info", event, meta);
+  }
+  warn(event: string, meta?: Record<string, unknown>) {
+    this.log("warn", event, meta);
+  }
+  error(event: string, meta?: Record<string, unknown>) {
+    this.log("error", event, meta);
+  }
+}
+
+// =============================================================================
+// Session Management
+// =============================================================================
+
+interface Session {
+  id: string;
+  lastResponseId: string;
+  createdAt: number;
+  lastAccessAt: number;
+  queryCount: number;
+  totalTokens: number;
+}
+
+class SessionStore {
+  private sessions: Map<string, Session> = new Map();
+  private ttl: number;
+  private maxSessions: number;
+
+  constructor(ttl = 7200000, maxSessions = 100) {
+    this.ttl = ttl;
+    this.maxSessions = maxSessions;
+  }
+
+  create(): Session {
+    this.cleanup();
+    const session: Session = {
+      id: nanoid(),
+      lastResponseId: "",
+      createdAt: Date.now(),
+      lastAccessAt: Date.now(),
+      queryCount: 0,
+      totalTokens: 0,
+    };
+    this.sessions.set(session.id, session);
+    return session;
+  }
+
+  get(id: string): Session | undefined {
+    const session = this.sessions.get(id);
+    if (session && Date.now() - session.lastAccessAt < this.ttl) {
+      return session;
+    }
+    // TTL expired or not found
+    if (session) {
+      this.sessions.delete(id);
+    }
+    return undefined;
+  }
+
+  update(id: string, responseId: string, tokens: number): void {
+    const session = this.sessions.get(id);
+    if (session) {
+      session.lastResponseId = responseId;
+      session.lastAccessAt = Date.now();
+      session.queryCount++;
+      session.totalTokens += tokens;
+    }
+  }
+
+  resetCounters(id: string): void {
+    const session = this.sessions.get(id);
+    if (session) {
+      session.queryCount = 0;
+      session.totalTokens = 0;
+    }
+  }
+
+  cleanup(): void {
+    const now = Date.now();
+    for (const [id, session] of this.sessions) {
+      if (now - session.lastAccessAt >= this.ttl) {
+        this.sessions.delete(id);
+      }
+    }
+    // LRU eviction if over max
+    while (this.sessions.size > this.maxSessions) {
+      const oldest = [...this.sessions.entries()].sort(
+        (a, b) => a[1].lastAccessAt - b[1].lastAccessAt
+      )[0];
+      if (oldest) this.sessions.delete(oldest[0]);
+    }
+  }
+}
 
 // Create server instance
 const server = new McpServer({
@@ -21,6 +154,15 @@ function parseIntWithFallback(
   if (!value) return fallback;
   const parsed = parseInt(value, 10);
   return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+// Helper to parse boolean env vars
+function parseBoolWithFallback(
+  value: string | undefined,
+  fallback: boolean
+): boolean {
+  if (!value) return fallback;
+  return value.toLowerCase() === "true";
 }
 
 // Configuration from environment variables
@@ -44,7 +186,26 @@ const config = {
     | "medium"
     | "high",
   systemPrompt: process.env.SYSTEM_PROMPT,
+  // Session management
+  sessionTtlMs: parseIntWithFallback(process.env.SESSION_TTL_MS, 7200000), // 2 hours
+  maxSessions: parseIntWithFallback(process.env.MAX_SESSIONS, 100),
+  // Compaction
+  autoCompaction: parseBoolWithFallback(process.env.AUTO_COMPACTION, true),
+  compactionQueryThreshold: parseIntWithFallback(
+    process.env.COMPACTION_QUERY_THRESHOLD,
+    10
+  ),
+  compactionTokenThreshold: parseIntWithFallback(
+    process.env.COMPACTION_TOKEN_THRESHOLD,
+    50000
+  ),
+  // Logging
+  logLevel: (process.env.LOG_LEVEL || "info") as LogLevel,
 };
+
+// Initialize logger and session store
+const logger = new Logger(config.logLevel);
+const sessionStore = new SessionStore(config.sessionTtlMs, config.maxSessions);
 
 // Validate API key
 if (!config.apiKey) {
@@ -88,6 +249,72 @@ const openai = new OpenAI({
   timeout: config.timeout,
 });
 
+// =============================================================================
+// Compaction
+// =============================================================================
+
+function shouldCompact(session: Session): boolean {
+  if (!config.autoCompaction) return false;
+  if (!session.lastResponseId) return false;
+  return (
+    session.queryCount >= config.compactionQueryThreshold ||
+    session.totalTokens >= config.compactionTokenThreshold
+  );
+}
+
+async function compactConversation(
+  session: Session
+): Promise<{ success: boolean; newResponseId?: string }> {
+  const maxRetries = 2;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      logger.debug("compaction_attempt", {
+        sessionId: session.id,
+        attempt,
+        queryCount: session.queryCount,
+        totalTokens: session.totalTokens,
+      });
+
+      // Use the compact method from SDK v6.15.0
+      const compacted = await (openai.responses as any).compact({
+        model: config.model,
+        previous_response_id: session.lastResponseId,
+      });
+
+      logger.info("compaction_success", {
+        sessionId: session.id,
+        attempt,
+        newResponseId: compacted.id,
+      });
+      return { success: true, newResponseId: compacted.id };
+    } catch (error) {
+      logger.warn("compaction_retry", {
+        sessionId: session.id,
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  logger.error("compaction_failed", {
+    sessionId: session.id,
+    queryCount: session.queryCount,
+    totalTokens: session.totalTokens,
+  });
+  return { success: false };
+}
+
+// =============================================================================
+// Search Execution
+// =============================================================================
+
+interface SearchResult {
+  text: string;
+  responseId: string;
+  tokens: number;
+}
+
 // Helper function to execute a single search
 async function executeSingleSearch(
   input: string,
@@ -96,8 +323,10 @@ async function executeSingleSearch(
     searchContextSize?: "low" | "medium" | "high";
     outputVerbosity?: "low" | "medium" | "high";
     outputFormatInstruction?: string;
-  },
-): Promise<string> {
+    previousResponseId?: string;
+  }
+): Promise<SearchResult> {
+  const startTime = Date.now();
   try {
     const reasoningEffort = options?.reasoningEffort ?? config.reasoningEffort;
     const searchContextSize =
@@ -127,7 +356,7 @@ async function executeSingleSearch(
         : verbosityInstruction;
     }
 
-    const request = {
+    const request: Record<string, unknown> = {
       model: config.model,
       input,
       tools: [
@@ -139,30 +368,81 @@ async function executeSingleSearch(
       tool_choice: "auto" as const,
       parallel_tool_calls: true,
       reasoning: { effort: reasoningEffort },
-    } as Record<string, unknown>;
+      store: true, // Always store for session continuity
+    };
 
     if (instructions) {
       request.instructions = instructions;
     }
 
+    // Add previous_response_id for session continuity
+    if (options?.previousResponseId) {
+      request.previous_response_id = options.previousResponseId;
+    }
+
+    logger.debug("api_request", {
+      input: input.substring(0, 100),
+      reasoningEffort,
+      searchContextSize,
+      hasPreviousResponseId: !!options?.previousResponseId,
+    });
+
     const response = await openai.responses.create(request as any);
-    return response.output_text || "No response text available.";
+    const duration = Date.now() - startTime;
+    const tokens = (response as any).usage?.total_tokens || 0;
+
+    logger.info("api_response", {
+      responseId: response.id,
+      duration,
+      tokens,
+    });
+
+    return {
+      text: response.output_text || "No response text available.",
+      responseId: response.id,
+      tokens,
+    };
   } catch (error) {
-    console.error("Error calling OpenAI API:", error);
+    const duration = Date.now() - startTime;
+    logger.error("api_error", {
+      error: error instanceof Error ? error.message : String(error),
+      duration,
+    });
+
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error occurred";
     // Provide more helpful error messages for common issues
+    let errorText: string;
     if (errorMessage.includes("api_key")) {
-      return `Error: Invalid API key. Please check your OPENAI_API_KEY environment variable.`;
+      errorText = `Error: Invalid API key. Please check your OPENAI_API_KEY environment variable.`;
+    } else if (errorMessage.includes("rate_limit")) {
+      errorText = `Error: Rate limit exceeded. Please try again later.`;
+    } else if (errorMessage.includes("timeout")) {
+      errorText = `Error: Request timeout. The search took too long to complete.`;
+    } else {
+      errorText = `Error: ${errorMessage}`;
     }
-    if (errorMessage.includes("rate_limit")) {
-      return `Error: Rate limit exceeded. Please try again later.`;
-    }
-    if (errorMessage.includes("timeout")) {
-      return `Error: Request timeout. The search took too long to complete.`;
-    }
-    return `Error: ${errorMessage}`;
+
+    return {
+      text: errorText,
+      responseId: "",
+      tokens: 0,
+    };
   }
+}
+
+// Legacy wrapper for backward compatibility with batch search
+async function executeSingleSearchLegacy(
+  input: string,
+  options?: {
+    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
+    searchContextSize?: "low" | "medium" | "high";
+    outputVerbosity?: "low" | "medium" | "high";
+    outputFormatInstruction?: string;
+  }
+): Promise<string> {
+  const result = await executeSingleSearch(input, options);
+  return result.text;
 }
 
 // Define the single search tool
@@ -177,73 +457,174 @@ Use this tool when you need to:
 - Get design recommendations or best practices
 - Understand complex concepts or technologies
 
-The tool supports natural language queries and can search across documentation, GitHub issues, Stack Overflow, and other technical resources.`,
+The tool supports natural language queries and can search across documentation, GitHub issues, Stack Overflow, and other technical resources.
+
+Session Support:
+- If sessionId is omitted, a new session is automatically created
+- Pass the returned sessionId in subsequent requests to maintain conversation context
+- Sessions expire after 2 hours of inactivity (configurable via SESSION_TTL_MS)
+- Invalid or expired sessionId will return an error`,
   {
     input: z
       .string()
       .describe(
-        "Your search query or question in natural language. Examples: 'How to fix React useState error', 'Latest TypeScript 5.0 features', 'Best practices for error handling in Node.js', 'OpenAI API rate limits and pricing'.",
+        "Your search query or question in natural language. Examples: 'How to fix React useState error', 'Latest TypeScript 5.0 features', 'Best practices for error handling in Node.js', 'OpenAI API rate limits and pricing'."
+      ),
+    sessionId: z
+      .string()
+      .optional()
+      .describe(
+        "Session ID for conversation continuity. If omitted, a new session is created. Pass the sessionId from a previous response to continue the conversation with context."
       ),
     reasoningEffort: z
       .enum(["none", "low", "medium", "high", "xhigh"])
       .optional()
       .describe(
-        "Reasoning effort level: 'none' (no reasoning, fastest), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (thorough, slower), 'xhigh' (maximum deliberation for hardest tasks). Higher values provide deeper analysis but increase latency/cost. Use 'none' for low-latency tasks, 'xhigh' only when needed.",
+        "Reasoning effort level: 'none' (no reasoning, fastest), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (thorough, slower), 'xhigh' (maximum deliberation for hardest tasks). Higher values provide deeper analysis but increase latency/cost. Use 'none' for low-latency tasks, 'xhigh' only when needed."
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
       .optional()
       .describe(
-        "Search context size: 'low' (fewer results, faster), 'medium' (balanced, recommended), 'high' (most comprehensive, slower). Higher values retrieve more search results and context for better coverage of the topic.",
+        "Search context size: 'low' (fewer results, faster), 'medium' (balanced, recommended), 'high' (most comprehensive, slower). Higher values retrieve more search results and context for better coverage of the topic."
       ),
     outputVerbosity: z
       .enum(["low", "medium", "high"])
       .optional()
       .describe(
-        "Output verbosity: 'low' (concise, brief answers), 'medium' (balanced, recommended), 'high' (comprehensive with full context). Use 'low' for quick answers, 'high' for detailed explanations with examples.",
+        "Output verbosity: 'low' (concise, brief answers), 'medium' (balanced, recommended), 'high' (comprehensive with full context). Use 'low' for quick answers, 'high' for detailed explanations with examples."
       ),
     outputFormatInstruction: z
       .string()
       .optional()
       .describe(
-        "Custom format instructions for the response. Examples: 'Format as a bulleted list', 'Use JSON format', 'Provide code examples with explanations', 'Create a comparison table', 'Structure as FAQ format'. This is appended to the system prompt to control output structure.",
+        "Custom format instructions for the response. Examples: 'Format as a bulleted list', 'Use JSON format', 'Provide code examples with explanations', 'Create a comparison table', 'Structure as FAQ format'. This is appended to the system prompt to control output structure."
       ),
   },
   async ({
     input,
+    sessionId,
     reasoningEffort,
     searchContextSize,
     outputVerbosity,
     outputFormatInstruction,
   }: {
     input: string;
+    sessionId?: string | undefined;
     reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | undefined;
     searchContextSize?: "low" | "medium" | "high" | undefined;
     outputVerbosity?: "low" | "medium" | "high" | undefined;
     outputFormatInstruction?: string | undefined;
   }) => {
+    logger.debug("web_search_request", {
+      inputLength: input.length,
+      sessionId: sessionId ?? "new",
+      reasoningEffort,
+      searchContextSize,
+    });
+
+    // Handle session
+    let session: Session | undefined;
+    let warning: string | undefined;
+
+    if (sessionId) {
+      // Validate existing session
+      session = sessionStore.get(sessionId);
+      if (!session) {
+        logger.warn("invalid_session", { sessionId });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  sessionId: null,
+                  result: null,
+                  error: `Invalid or expired session ID: ${sessionId}`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+    } else {
+      // Create new session
+      session = sessionStore.create();
+      logger.info("session_created", { sessionId: session.id });
+    }
+
+    // Check if compaction is needed (before request)
+    if (shouldCompact(session)) {
+      logger.info("compaction_triggered", {
+        sessionId: session.id,
+        queryCount: session.queryCount,
+        totalTokens: session.totalTokens,
+      });
+      const compactResult = await compactConversation(session);
+      if (compactResult.success && compactResult.newResponseId) {
+        session.lastResponseId = compactResult.newResponseId;
+        sessionStore.resetCounters(session.id);
+      } else {
+        warning = "Compaction failed, continuing without compression";
+      }
+    }
+
+    // Build search options
     const options: {
       reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
       searchContextSize?: "low" | "medium" | "high";
       outputVerbosity?: "low" | "medium" | "high";
       outputFormatInstruction?: string;
+      previousResponseId?: string;
     } = {};
+
     if (reasoningEffort !== undefined) options.reasoningEffort = reasoningEffort;
     if (searchContextSize !== undefined)
       options.searchContextSize = searchContextSize;
     if (outputVerbosity !== undefined) options.outputVerbosity = outputVerbosity;
     if (outputFormatInstruction !== undefined)
       options.outputFormatInstruction = outputFormatInstruction;
+
+    // Add previous response ID for session continuity
+    if (session.lastResponseId) {
+      options.previousResponseId = session.lastResponseId;
+    }
+
+    // Execute search
     const result = await executeSingleSearch(input, options);
+
+    // Update session with response
+    if (result.responseId) {
+      sessionStore.update(session.id, result.responseId, result.tokens);
+    }
+
+    logger.info("web_search_complete", {
+      sessionId: session.id,
+      queryCount: session.queryCount,
+      totalTokens: session.totalTokens,
+    });
+
+    // Return JSON response
     return {
       content: [
         {
           type: "text",
-          text: result,
+          text: JSON.stringify(
+            {
+              sessionId: session.id,
+              result: result.text,
+              ...(warning && { warning }),
+            },
+            null,
+            2
+          ),
         },
       ],
     };
-  },
+  }
 );
 
 // Define the batch search tool for parallel execution
@@ -336,9 +717,9 @@ Error handling: Individual query failures don't stop the batch; each query's res
       if (outputFormatInstruction !== undefined)
         searchOptions.outputFormatInstruction = outputFormatInstruction;
 
-      // Execute searches with individual error handling
+      // Execute searches with individual error handling (using legacy function for batch)
       const results = await Promise.allSettled(
-        inputs.map((input) => executeSingleSearch(input, searchOptions)),
+        inputs.map((input) => executeSingleSearchLegacy(input, searchOptions))
       );
 
       // Process results based on output format
