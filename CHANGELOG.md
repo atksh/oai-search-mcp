@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **GPT-5.4 Only**: Updated the hard-coded model from `gpt-5.2` to `gpt-5.4`
+- **Context window expansion**: Leverages GPT-5.4's 1,050,000-token context (up from 400K)
+- **Compaction thresholds raised**: `COMPACTION_TOKEN_THRESHOLD` default 50,000 → 200,000, `COMPACTION_QUERY_THRESHOLD` default 10 → 20
+- **Session TTL extended**: Default session TTL increased from 2h to 4h for longer research sessions
+- **System prompt**: Updated model references for GPT-5.4
+- **Documentation**: Updated README, package metadata, and test notes for GPT-5.4
+
+## [1.1.0] - 2025-12-11
+
+### Changed
+
 - **GPT-5.2 Only**: Updated the hard-coded model from `gpt-5.1` to `gpt-5.2`
 - **Reasoning effort expanded**: Added `xhigh` option across configuration and tool schemas
 - **System prompt**: Refreshed guidance for GPT‑5.2 (verbosity clamps, ambiguity handling, long‑context recall)

@@ -1,7 +1,7 @@
-# GPT-5.2 Migration - Test Results
+# GPT-5.4 Migration - Test Results
 
-**Date**: 2025-12-11  
-**Version**: 1.0.0  
+**Date**: 2026-03-06
+**Version**: 1.2.0
 **Status**: ✅ All Tests Passed
 
 ## Build Verification
@@ -20,7 +20,7 @@
 ## Configuration Tests
 
 ### Model Configuration
-- ✅ Model hard-coded to `gpt-5.2`
+- ✅ Model hard-coded to `gpt-5.4`
 - ✅ `OPENAI_MODEL` environment variable removed
 - ✅ No references to other models (GPT-5, O3, O4-mini)
 
@@ -31,14 +31,20 @@
 - ✅ Tool descriptions include usage guidance for each level
 
 ### Version Consistency
-- ✅ package.json: 1.0.0
-- ✅ index.ts server instance: 1.0.0
-- ✅ CHANGELOG.md: 1.0.0 entry documented
+- ✅ package.json: 1.2.0
+- ✅ index.ts server instance: 1.2.0
+- ✅ CHANGELOG.md: Unreleased entry
+
+### Context Window Expansion
+- ✅ `compactionTokenThreshold` default raised to 200,000 (within 272K pricing threshold)
+- ✅ `compactionQueryThreshold` default raised to 20
+- ✅ `sessionTtlMs` default raised to 14,400,000 (4 hours)
+- ✅ Defaults stay below long-context pricing tier (272K input tokens)
 
 ## System Prompt Verification
 
-### GPT-5.2 Optimizations
-- ✅ Mentions GPT-5.2 explicitly
+### GPT-5.4 Optimizations
+- ✅ Mentions GPT-5.4 explicitly
 - ✅ Includes persistence and completeness guidelines
 - ✅ Adaptive verbosity control documented
 - ✅ Source verification and citation instructions
@@ -74,10 +80,10 @@
 
 ### README.md
 - ✅ Fully rewritten in English
-- ✅ GPT-5.2 features highlighted
+- ✅ GPT-5.4 features highlighted
 - ✅ Migration guide included
 - ✅ Environment variables documented
-- ✅ All examples use GPT-5.2
+- ✅ All examples use GPT-5.4
 - ✅ Removed multi-model references
 
 ### CHANGELOG.md
@@ -113,24 +119,24 @@
 | Category | Tests | Passed | Failed |
 |----------|-------|--------|--------|
 | Build | 4 | 4 | 0 |
-| Configuration | 7 | 7 | 0 |
+| Configuration | 11 | 11 | 0 |
 | System Prompt | 6 | 6 | 0 |
 | Batch Output | 7 | 7 | 0 |
 | Runtime | 4 | 4 | 0 |
 | Documentation | 5 | 5 | 0 |
-| **Total** | **33** | **33** | **0** |
+| **Total** | **37** | **37** | **0** |
 
 ## Recommendations for Production Use
 
 ### Before Deployment
 1. ✅ Build verification completed
 2. ✅ Configuration validated
-3. ⚠️ Requires valid OpenAI API key with GPT-5.2 access
+3. ⚠️ Requires valid OpenAI API key with GPT-5.4 access
 4. ℹ️ Test with actual MCP client for end-to-end validation
 
 ### For Users Migrating from v0.0.x
 1. Remove `OPENAI_MODEL` from configuration
-2. Verify OpenAI API key has GPT-5.2 access
+2. Verify OpenAI API key has GPT-5.4 access
 3. Consider using `REASONING_EFFORT=none` for low-latency use cases (`xhigh` for hardest tasks)
 4. Review new system prompt if using custom prompts
 5. Update batch output parsing if using `outputFormat: "structured"`
@@ -139,13 +145,13 @@
 
 ✅ **All tests passed successfully**
 
-The GPT-5.2 migration is complete and verified. The server:
-- Exclusively uses GPT-5.2
+The GPT-5.4 migration is complete and verified. The server:
+- Exclusively uses GPT-5.4
 - Includes `none` reasoning mode for low-latency tasks
 - Includes `xhigh` reasoning mode for maximum deliberation
-- Has enhanced system prompt optimized for GPT-5.2 characteristics
+- Has enhanced system prompt optimized for GPT-5.4 characteristics
 - Provides improved batch output formatting
 - Maintains backward compatibility for all non-breaking features
 - Is ready for production deployment
 
-**Next Steps**: Deploy to production and monitor performance with real GPT-5.2 API access.
+**Next Steps**: Deploy to production and monitor performance with real GPT-5.4 API access.

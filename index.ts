@@ -143,7 +143,7 @@ class SessionStore {
 // Create server instance
 const server = new McpServer({
   name: "oai-search-mcp",
-  version: "1.0.0",
+  version: "1.2.0",
 });
 
 // Helper function to safely parse integer with fallback
@@ -168,7 +168,7 @@ function parseBoolWithFallback(
 // Configuration from environment variables
 const config = {
   apiKey: process.env.OPENAI_API_KEY,
-  model: "gpt-5.2",
+  model: "gpt-5.4",
   maxRetries: parseIntWithFallback(process.env.OPENAI_MAX_RETRIES, 3),
   timeout: parseIntWithFallback(process.env.OPENAI_API_TIMEOUT, 300000),
   searchContextSize: (process.env.SEARCH_CONTEXT_SIZE || "medium") as
@@ -187,17 +187,17 @@ const config = {
     | "high",
   systemPrompt: process.env.SYSTEM_PROMPT,
   // Session management
-  sessionTtlMs: parseIntWithFallback(process.env.SESSION_TTL_MS, 7200000), // 2 hours
+  sessionTtlMs: parseIntWithFallback(process.env.SESSION_TTL_MS, 14400000), // 4 hours
   maxSessions: parseIntWithFallback(process.env.MAX_SESSIONS, 100),
   // Compaction
   autoCompaction: parseBoolWithFallback(process.env.AUTO_COMPACTION, true),
   compactionQueryThreshold: parseIntWithFallback(
     process.env.COMPACTION_QUERY_THRESHOLD,
-    10
+    20
   ),
   compactionTokenThreshold: parseIntWithFallback(
     process.env.COMPACTION_TOKEN_THRESHOLD,
-    50000
+    200000
   ),
   // Logging
   logLevel: (process.env.LOG_LEVEL || "info") as LogLevel,
