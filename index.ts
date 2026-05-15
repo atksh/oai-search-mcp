@@ -168,7 +168,7 @@ function parseBoolWithFallback(
 // Configuration from environment variables
 const config = {
   apiKey: process.env.OPENAI_API_KEY,
-  model: "gpt-5.4",
+  model: "gpt-5.5",
   maxRetries: parseIntWithFallback(process.env.OPENAI_MAX_RETRIES, 3),
   timeout: parseIntWithFallback(process.env.OPENAI_API_TIMEOUT, 300000),
   searchContextSize: (process.env.SEARCH_CONTEXT_SIZE || "medium") as
@@ -462,7 +462,7 @@ The tool supports natural language queries and can search across documentation, 
 Session Support:
 - If sessionId is omitted, a new session is automatically created
 - Pass the returned sessionId in subsequent requests to maintain conversation context
-- Sessions expire after 2 hours of inactivity (configurable via SESSION_TTL_MS)
+- Sessions expire after 4 hours of inactivity by default (configurable via SESSION_TTL_MS)
 - Invalid or expired sessionId will return an error`,
   {
     input: z
@@ -480,7 +480,7 @@ Session Support:
       .enum(["none", "low", "medium", "high", "xhigh"])
       .optional()
       .describe(
-        "Reasoning effort level: 'none' (no reasoning, fastest), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (thorough, slower), 'xhigh' (maximum deliberation for hardest tasks). Higher values provide deeper analysis but increase latency/cost. Use 'none' for low-latency tasks, 'xhigh' only when needed."
+        "Reasoning effort level: 'none' (no reasoning, fastest), 'low' (efficient reasoning), 'medium' (balanced, recommended), 'high' (thorough, slower), 'xhigh' (maximum deliberation for hardest tasks). Use 'low' before 'none' when search, planning, or multi-step decisions still matter; reserve 'xhigh' for hardest tasks."
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -658,7 +658,7 @@ Error handling: Individual query failures don't stop the batch; each query's res
       .enum(["none", "low", "medium", "high", "xhigh"])
       .optional()
       .describe(
-        "Reasoning effort level applied to all queries in the batch: 'none' (fastest), 'low' (quick analysis), 'medium' (balanced, recommended), 'high' (thorough), 'xhigh' (maximum deliberation). Higher values increase processing time/cost for all queries.",
+        "Reasoning effort level applied to all queries in the batch: 'none' (fastest), 'low' (efficient reasoning), 'medium' (balanced, recommended), 'high' (thorough), 'xhigh' (maximum deliberation). Use 'low' before 'none' when search, planning, or multi-step decisions still matter.",
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])

@@ -1,6 +1,6 @@
 {
   "name": "oai-search-mcp",
-  "description": "MCP server that enables AI agents to perform intelligent web searches using OpenAI's GPT-5.4 model with natural language queries",
+  "description": "MCP server that enables AI agents to perform intelligent web searches using OpenAI's GPT-5.5 model with natural language queries",
   "version": "1.2.0",
   "main": "build/index.js",
   "bin": {

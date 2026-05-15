@@ -1,22 +1,22 @@
-# oai-search-mcp (GPT-5.4)
+# oai-search-mcp (GPT-5.5)
 
-MCP server that enables AI agents to leverage OpenAI's GPT-5.4 model with powerful web search capabilities. By registering this server with any AI coding agent, the agent can autonomously consult GPT-5.4 to solve complex problems through intelligent web searches.
+MCP server that enables AI agents to leverage OpenAI's GPT-5.5 model with powerful web search capabilities. By registering this server with any AI coding agent, the agent can autonomously consult GPT-5.5 to solve complex problems through intelligent web searches.
 
-## Why GPT-5.4?
+## Why GPT-5.5?
 
-GPT-5.4 is OpenAI's newest flagship model, optimized for:
+GPT-5.5 is a strong fit for production search and research workflows that need:
 
-- **1M token context window**: 2.6x larger context (1,050,000 tokens vs GPT-5.2's 400,000), enabling longer research sessions
-- **Superior web search accuracy**: BrowseComp benchmark improved from 65.8% to 82.7%
-- **Higher accuracy & instruction adherence**: Less drift and cleaner execution on multi-step tasks
-- **Native compaction support**: First mainline model with built-in conversation compaction
-- **Agent-ready reliability**: Consistent behavior for production research flows
+- **Efficient reasoning**: Strong results with fewer reasoning tokens in complex, tool-heavy, and multi-step workflows
+- **Outcome-first execution**: Better adherence to clear goals, success criteria, evidence rules, and output shape
+- **Precise tool use**: Stronger tool selection and argument discipline on large or long-running tool surfaces
+- **Grounded long-context retrieval**: Designed for coding use cases, grounded assistants, and research workflows
+- **Modern Responses features**: Supports prompt caching, hosted tools, tool search, compaction, and stored conversation state
 
 ## Use Cases
 
 ### 🐛 When You're Stuck Debugging
 
-GPT-5.4's web search can scan GitHub issues, Stack Overflow, and documentation to find solutions for niche problems.
+GPT-5.5's web search can scan GitHub issues, Stack Overflow, and documentation to find solutions for niche problems.
 
 **Example prompts:**
 ```
@@ -41,14 +41,14 @@ Get answers from powerful web search even when documentation is scattered or inc
 
 ### 🧩 When Tackling Complex Tasks
 
-Use GPT-5.4 not just for search, but as a design consultant and problem-solving partner.
+Use GPT-5.5 not just for search, but as a design consultant and problem-solving partner.
 
 **Example prompts:**
 ```
 > I want to create a collaborative editor. Please design it and ask oai for a design review.
 ```
 
-The AI agent may autonomously decide to consult GPT-5.4 when it deems necessary, dramatically expanding the range of problems it can solve independently!
+The AI agent may autonomously decide to consult GPT-5.5 when it deems necessary, dramatically expanding the range of problems it can solve independently!
 
 ## Installation
 
@@ -150,11 +150,11 @@ claude mcp add oai \
 | --- | --- | --- | --- |
 | `OPENAI_API_KEY` | **Yes** | - | Your OpenAI API key |
 | `SEARCH_CONTEXT_SIZE` | No | `medium` | Search context size<br>**Values**: `low`, `medium`, `high`<br>Higher values retrieve more search results for better coverage |
-| `REASONING_EFFORT` | No | `medium` | GPT-5.4 reasoning effort level<br>**Values**: `none`, `low`, `medium`, `high`, `xhigh`<br>`none`: No reasoning, fastest (for low-latency tasks)<br>`low`: Quick analysis<br>`medium`: Balanced (recommended)<br>`high`: Thorough, slower<br>`xhigh`: Maximum deliberation for hardest tasks |
+| `REASONING_EFFORT` | No | `medium` | GPT-5.5 reasoning effort level<br>**Values**: `none`, `low`, `medium`, `high`, `xhigh`<br>`none`: No reasoning, fastest for latency-critical tasks<br>`low`: Efficient reasoning for lighter search and analysis<br>`medium`: Balanced (recommended)<br>`high`: Thorough, slower<br>`xhigh`: Maximum deliberation for hardest tasks |
 | `OUTPUT_VERBOSITY` | No | `medium` | Response detail level<br>**Values**: `low`, `medium`, `high`<br>`low`: Concise answers<br>`medium`: Balanced detail<br>`high`: Comprehensive with full context |
 | `OPENAI_API_TIMEOUT` | No | `300000` | API request timeout in milliseconds<br>Default: 300000 (5 minutes) |
 | `OPENAI_MAX_RETRIES` | No | `3` | Maximum retries for failed requests<br>The SDK automatically retries on rate limits (429), server errors (5xx), and connection errors |
-| `SYSTEM_PROMPT` | No | _(default)_ | Custom system prompt for response style<br>If not provided, uses the built-in prompt optimized for GPT-5.4 |
+| `SYSTEM_PROMPT` | No | _(default)_ | Custom system prompt for response style<br>If not provided, uses the built-in prompt optimized for GPT-5.5 |
 | `SESSION_TTL_MS` | No | `14400000` | Session time-to-live in milliseconds (default: 4 hours) |
 | `MAX_SESSIONS` | No | `100` | Maximum number of concurrent sessions |
 | `AUTO_COMPACTION` | No | `true` | Enable automatic conversation compaction |
@@ -166,7 +166,7 @@ claude mcp add oai \
 
 ### 🔍 Single Web Search
 
-Execute a single intelligent web search with GPT-5.4:
+Execute a single intelligent web search with GPT-5.5:
 
 ```typescript
 // Tool: web-search
@@ -260,25 +260,25 @@ Pre-configured prompt templates for common tasks:
 - `research-api`: Research API or library documentation
 - `explore-documentation`: Explore and understand technology documentation
 
-## GPT-5.4 Optimizations
+## GPT-5.5 Optimizations
 
-This MCP server is specifically optimized for GPT-5.4's strengths:
+This MCP server is specifically optimized for GPT-5.5's strengths:
 
-### Disciplined Scaffolding
+### Outcome-First Answers
 
-GPT‑5.4 builds clearer intermediate structure by default. The system prompt reinforces plan‑then‑answer behavior without adding extra scope.
+The system prompt asks GPT‑5.5 to identify the requested outcome, answer directly, and stop once the answer, evidence, and caveats are complete.
 
 ### Explicit Verbosity Clamps
 
-GPT‑5.4 is concise by default, so the prompt sets concrete length/shape targets and respects the runtime’s `OUTPUT_VERBOSITY` instruction.
+GPT‑5.5 is direct by default, so the prompt sets concrete length/shape targets and respects the runtime’s `OUTPUT_VERBOSITY` instruction.
 
 ### Reasoning Effort Knob
 
-Use `REASONING_EFFORT=none` for low‑latency tasks that don't require deep analysis:
-- Quick fact lookups
-- Simple documentation searches
-- Status checks
-- Straightforward questions
+Use `REASONING_EFFORT=low` for efficient everyday searches that still benefit from reasoning. Reserve `none` for latency-critical tasks that need little or no multi-step analysis:
+- Fast fact retrieval
+- Simple status checks
+- Lightweight classification
+- Straightforward questions with narrow scope
 
 Use `medium`, `high`, or `xhigh` for:
 - Complex problem solving
@@ -288,7 +288,7 @@ Use `medium`, `high`, or `xhigh` for:
 
 ### Ambiguity & Freshness Handling
 
-The prompt instructs GPT‑5.4 to avoid hallucinating on underspecified queries, cover multiple plausible intents with assumptions, and rely on web research for time‑sensitive facts.
+The prompt instructs GPT‑5.5 to avoid hallucinating on underspecified queries, cover multiple plausible intents with assumptions, and rely on web research for time‑sensitive facts.
 
 ## Tips for Best Results
 
@@ -304,16 +304,17 @@ The prompt instructs GPT‑5.4 to avoid hallucinating on underspecified queries,
 ### From v1.1.x to v1.2.0
 
 **Changes:**
-1. Model upgraded from GPT-5.2 to GPT-5.4
+1. Model upgraded from GPT-5.2 to GPT-5.5
 2. Default `COMPACTION_TOKEN_THRESHOLD` increased from 50,000 to 200,000
 3. Default `COMPACTION_QUERY_THRESHOLD` increased from 10 to 20
 4. Default `SESSION_TTL_MS` increased from 7,200,000 (2h) to 14,400,000 (4h)
+5. Built-in system prompt refreshed for outcome-first answers, citation discipline, and clear stopping conditions
 
 **Migration steps:**
-1. Ensure your OpenAI API key has GPT-5.4 access
+1. Ensure your OpenAI API key has GPT-5.5 access
 2. Review your custom `COMPACTION_TOKEN_THRESHOLD` if set — the default is now 200,000
 3. Note: sessions now last 4 hours by default; override with `SESSION_TTL_MS` if needed
-4. Long-context pricing applies above 272K input tokens (2x input, 1.5x output cost)
+4. Review custom `SYSTEM_PROMPT` values if you depend on older GPT-5.2 prompt behavior
 
 ### From v1.0.x to v1.1.0
 
@@ -344,15 +345,15 @@ To optimize React rendering performance...
 
 If you're upgrading from a version that supported multiple models (GPT-5, O3, O4-mini):
 
-1. **Remove `OPENAI_MODEL` environment variable** - GPT-5.4 is now the only supported model
+1. **Remove `OPENAI_MODEL` environment variable** - GPT-5.5 is now the only supported model
 2. **Update reasoning effort** - If you previously used `minimal`, switch to `none`; `xhigh` is available for hardest tasks
-3. **Review system prompt** - Now optimized specifically for GPT-5.4 characteristics
+3. **Review system prompt** - Now optimized specifically for GPT-5.5 characteristics
 4. **Check batch output** - Enhanced structured format with better presentation
 
 ## Requirements
 
 - Node.js 16 or higher
-- OpenAI API key with GPT-5.4 access
+- OpenAI API key with GPT-5.5 access
 - MCP-compatible client (Claude Desktop, Claude Code, etc.)
 
 ## License
@@ -367,6 +368,6 @@ Issues and pull requests are welcome! Please see the [GitHub repository](https:/
 
 Built with:
 - [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) by Anthropic
-- [OpenAI API](https://openai.com/api/) for GPT-5.4 access
+- [OpenAI API](https://openai.com/api/) for GPT-5.5 access
 
-Optimized based on [OpenAI's GPT-5.4 Prompting Guide](https://cookbook.openai.com/examples/gpt-5/gpt-5-4_prompting_guide).
+Optimized based on [OpenAI's GPT-5.5 Prompting Guide](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5).
