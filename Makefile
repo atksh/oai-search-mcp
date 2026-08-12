@@ -49,9 +49,9 @@ check: build ## Verify build is successful and artifacts exist
 	@test -f build/SYSTEM_PROMPT.md || (echo "Error: build/SYSTEM_PROMPT.md not found" && exit 1)
 	@echo "Build verification successful."
 
-# Testing (placeholder for future tests)
-test: ## Run tests (placeholder)
-	@echo "No tests configured yet."
+# Testing
+test: ## Run deterministic tests
+	@pnpm test
 
 # Release Management
 release: check ## Prepare for release (build, check, and verify)
@@ -80,4 +80,3 @@ publish-dry-run: verify ## Dry run of npm publish
 	@echo "Performing dry run of npm publish..."
 	@pnpm publish --dry-run
 	@echo "Dry run completed."
-

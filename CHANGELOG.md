@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-12
+
+### Breaking Changes
+
+- **Node.js 22+**: Raised the supported runtime floor for OpenAI SDK 7.4.
+- **Programmatic search path**: Replaced direct hosted web-search execution with a bounded GPT-5.6 Programmatic Tool Calling workflow. Existing MCP input and output envelopes remain compatible, but request cost and latency can increase because each program-issued search is a nested Responses request.
+
+### Changed
+
+- **GPT-5.6 Sol**: Replaced the hard-coded `gpt-5.5` model with explicit `gpt-5.6-sol` for both outer orchestration and inner web retrieval.
+- **Stable web search**: Replaced `web_search_preview` with `web_search` and retained complete consulted-source metadata.
+- **Retrieval failures**: Return non-completed inner search responses as structured errors and retain URLs from search, opened-page, and in-page actions.
+- **Reasoning behavior**: Preserved `medium` as the outer default, added `max`, fixed inner retrieval at `none`, and explicitly retained `current_turn` reasoning context.
+- **Bounded orchestration**: Limited each query to five inner searches and eight PTC rounds; limited batch execution to three concurrent workflows.
+- **Observability**: Split outer/inner token, cache, call, round, model, and item-type logging.
+- **Compaction continuity**: Replay standalone compaction output items on the next turn instead of treating the compaction object ID as a response ID.
+- **Documentation and tests**: Added deterministic PTC continuation tests, an opt-in live smoke test, and v2 migration guidance.
+- **Dependency security**: Updated the MCP SDK and Nano ID to patched releases and adjusted resource registration for the current SDK contract.
+
+### Security
+
+- Documented that API credentials must remain in the environment or a secret manager and that plaintext credentials should be revoked and rotated.
+
+## [1.2.0] - 2026-05-15
+
 ### Changed
 
 - **GPT-5.5 Only**: Updated the hard-coded model from `gpt-5.2` to `gpt-5.5`
@@ -152,7 +177,11 @@ If you're upgrading from v0.0.x:
 - @wildgeece96 for adding configurable retry and timeout for OpenAI API (#6)
 - @punkpeye for adding MCP server badge (#1)
 
-[Unreleased]: https://github.com/yoshiko-pg/o3-search-mcp/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/atksh/oai-search-mcp/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/atksh/oai-search-mcp/compare/v1.2.0...v2.0.0
+[1.2.0]: https://github.com/atksh/oai-search-mcp/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/atksh/oai-search-mcp/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/atksh/oai-search-mcp/compare/v0.0.9...v1.0.0
 [0.0.9]: https://github.com/yoshiko-pg/o3-search-mcp/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/yoshiko-pg/o3-search-mcp/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/yoshiko-pg/o3-search-mcp/compare/v0.0.6...v0.0.7

@@ -2,11 +2,20 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import OpenAI from "openai";
+import type { ResponseInput } from "openai/resources/responses/responses";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { nanoid } from "nanoid";
+import {
+  executePtcSearch,
+  mapWithConcurrency,
+  MODEL,
+  type OutputVerbosity,
+  type ReasoningEffort,
+  type SearchContextSize,
+} from "./ptc-search.js";
 
 // =============================================================================
 // Logger Implementation
@@ -63,6 +72,7 @@ class Logger {
 interface Session {
   id: string;
   lastResponseId: string;
+  compactedInput: ResponseInput | null;
   createdAt: number;
   lastAccessAt: number;
   queryCount: number;
@@ -84,6 +94,7 @@ class SessionStore {
     const session: Session = {
       id: nanoid(),
       lastResponseId: "",
+      compactedInput: null,
       createdAt: Date.now(),
       lastAccessAt: Date.now(),
       queryCount: 0,
@@ -109,6 +120,7 @@ class SessionStore {
     const session = this.sessions.get(id);
     if (session) {
       session.lastResponseId = responseId;
+      session.compactedInput = null;
       session.lastAccessAt = Date.now();
       session.queryCount++;
       session.totalTokens += tokens;
@@ -143,7 +155,7 @@ class SessionStore {
 // Create server instance
 const server = new McpServer({
   name: "oai-search-mcp",
-  version: "1.2.0",
+  version: "2.0.0",
 });
 
 // Helper function to safely parse integer with fallback
@@ -168,23 +180,17 @@ function parseBoolWithFallback(
 // Configuration from environment variables
 const config = {
   apiKey: process.env.OPENAI_API_KEY,
-  model: "gpt-5.5",
+  model: MODEL,
   maxRetries: parseIntWithFallback(process.env.OPENAI_MAX_RETRIES, 3),
   timeout: parseIntWithFallback(process.env.OPENAI_API_TIMEOUT, 300000),
   searchContextSize: (process.env.SEARCH_CONTEXT_SIZE || "medium") as
     | "low"
     | "medium"
     | "high",
-  reasoningEffort: (process.env.REASONING_EFFORT || "medium") as
-    | "none"
-    | "low"
-    | "medium"
-    | "high"
-    | "xhigh",
-  outputVerbosity: (process.env.OUTPUT_VERBOSITY || "medium") as
-    | "low"
-    | "medium"
-    | "high",
+  reasoningEffort: (process.env.REASONING_EFFORT ||
+    "medium") as ReasoningEffort,
+  outputVerbosity: (process.env.OUTPUT_VERBOSITY ||
+    "medium") as OutputVerbosity,
   systemPrompt: process.env.SYSTEM_PROMPT,
   // Session management
   sessionTtlMs: parseIntWithFallback(process.env.SESSION_TTL_MS, 14400000), // 4 hours
@@ -264,7 +270,7 @@ function shouldCompact(session: Session): boolean {
 
 async function compactConversation(
   session: Session
-): Promise<{ success: boolean; newResponseId?: string }> {
+): Promise<{ success: boolean; compactedInput?: ResponseInput }> {
   const maxRetries = 2;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -276,8 +282,7 @@ async function compactConversation(
         totalTokens: session.totalTokens,
       });
 
-      // Use the compact method from SDK v6.15.0
-      const compacted = await (openai.responses as any).compact({
+      const compacted = await openai.responses.compact({
         model: config.model,
         previous_response_id: session.lastResponseId,
       });
@@ -285,9 +290,13 @@ async function compactConversation(
       logger.info("compaction_success", {
         sessionId: session.id,
         attempt,
-        newResponseId: compacted.id,
+        compactionId: compacted.id,
+        outputItems: compacted.output.length,
       });
-      return { success: true, newResponseId: compacted.id };
+      return {
+        success: true,
+        compactedInput: compacted.output as ResponseInput,
+      };
     } catch (error) {
       logger.warn("compaction_retry", {
         sessionId: session.id,
@@ -319,11 +328,12 @@ interface SearchResult {
 async function executeSingleSearch(
   input: string,
   options?: {
-    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
-    searchContextSize?: "low" | "medium" | "high";
-    outputVerbosity?: "low" | "medium" | "high";
+    reasoningEffort?: ReasoningEffort;
+    searchContextSize?: SearchContextSize;
+    outputVerbosity?: OutputVerbosity;
     outputFormatInstruction?: string;
     previousResponseId?: string;
+    compactedInput?: ResponseInput;
   }
 ): Promise<SearchResult> {
   const startTime = Date.now();
@@ -342,65 +352,44 @@ async function executeSingleSearch(
         : outputFormatInstruction;
     }
 
-    // Add verbosity instruction if specified
-    if (outputVerbosity) {
-      const verbosityInstruction = `Output verbosity level: ${outputVerbosity}. ${
-        outputVerbosity === "low"
-          ? "Provide concise, brief responses."
-          : outputVerbosity === "medium"
-            ? "Provide balanced, moderately detailed responses."
-            : "Provide comprehensive, detailed responses with full context."
-      }`;
-      instructions = instructions
-        ? `${instructions}\n\n${verbosityInstruction}`
-        : verbosityInstruction;
-    }
-
-    const request: Record<string, unknown> = {
-      model: config.model,
-      input,
-      tools: [
-        {
-          type: "web_search_preview",
-          search_context_size: searchContextSize,
-        },
-      ],
-      tool_choice: "auto" as const,
-      parallel_tool_calls: true,
-      reasoning: { effort: reasoningEffort },
-      store: true, // Always store for session continuity
-    };
-
-    if (instructions) {
-      request.instructions = instructions;
-    }
-
-    // Add previous_response_id for session continuity
-    if (options?.previousResponseId) {
-      request.previous_response_id = options.previousResponseId;
-    }
-
     logger.debug("api_request", {
       input: input.substring(0, 100),
       reasoningEffort,
       searchContextSize,
       hasPreviousResponseId: !!options?.previousResponseId,
+      hasCompactedInput: !!options?.compactedInput,
     });
 
-    const response = await openai.responses.create(request as any);
+    const response = await executePtcSearch(openai, input, {
+      instructions,
+      previousResponseId: options?.previousResponseId,
+      compactedInput: options?.compactedInput,
+      reasoningEffort,
+      searchContextSize,
+      outputVerbosity,
+    });
     const duration = Date.now() - startTime;
-    const tokens = (response as any).usage?.total_tokens || 0;
 
     logger.info("api_response", {
-      responseId: response.id,
+      responseId: response.responseId,
       duration,
-      tokens,
+      outerTokens: response.metrics.outerTokens,
+      innerTokens: response.metrics.innerTokens,
+      outerCachedTokens: response.metrics.outerCachedTokens,
+      innerCachedTokens: response.metrics.innerCachedTokens,
+      outerCacheWriteTokens: response.metrics.outerCacheWriteTokens,
+      innerCacheWriteTokens: response.metrics.innerCacheWriteTokens,
+      ptcRounds: response.metrics.ptcRounds,
+      innerSearchCalls: response.metrics.innerSearchCalls,
+      responseItemTypes: response.metrics.responseItemTypes,
+      outerModels: response.metrics.outerModels,
+      innerModels: response.metrics.innerModels,
     });
 
     return {
-      text: response.output_text || "No response text available.",
-      responseId: response.id,
-      tokens,
+      text: response.text,
+      responseId: response.responseId,
+      tokens: response.tokens,
     };
   } catch (error) {
     const duration = Date.now() - startTime;
@@ -435,9 +424,9 @@ async function executeSingleSearch(
 async function executeSingleSearchLegacy(
   input: string,
   options?: {
-    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
-    searchContextSize?: "low" | "medium" | "high";
-    outputVerbosity?: "low" | "medium" | "high";
+    reasoningEffort?: ReasoningEffort;
+    searchContextSize?: SearchContextSize;
+    outputVerbosity?: OutputVerbosity;
     outputFormatInstruction?: string;
   }
 ): Promise<string> {
@@ -477,10 +466,10 @@ Session Support:
         "Session ID for conversation continuity. If omitted, a new session is created. Pass the sessionId from a previous response to continue the conversation with context."
       ),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high", "xhigh"])
+      .enum(["none", "low", "medium", "high", "xhigh", "max"])
       .optional()
       .describe(
-        "Reasoning effort level: 'none' (no reasoning, fastest), 'low' (efficient reasoning), 'medium' (balanced, recommended), 'high' (thorough, slower), 'xhigh' (maximum deliberation for hardest tasks). Use 'low' before 'none' when search, planning, or multi-step decisions still matter; reserve 'xhigh' for hardest tasks."
+        "Outer GPT-5.6 orchestration and synthesis effort: 'none', 'low', 'medium' (balanced, recommended), 'high', 'xhigh', or 'max' (hardest quality-first tasks). Inner web retrieval always uses 'none' to bound multiplied cost."
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -511,7 +500,7 @@ Session Support:
   }: {
     input: string;
     sessionId?: string | undefined;
-    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | undefined;
+    reasoningEffort?: ReasoningEffort | undefined;
     searchContextSize?: "low" | "medium" | "high" | undefined;
     outputVerbosity?: "low" | "medium" | "high" | undefined;
     outputFormatInstruction?: string | undefined;
@@ -564,8 +553,9 @@ Session Support:
         totalTokens: session.totalTokens,
       });
       const compactResult = await compactConversation(session);
-      if (compactResult.success && compactResult.newResponseId) {
-        session.lastResponseId = compactResult.newResponseId;
+      if (compactResult.success && compactResult.compactedInput) {
+        session.lastResponseId = "";
+        session.compactedInput = compactResult.compactedInput;
         sessionStore.resetCounters(session.id);
       } else {
         warning = "Compaction failed, continuing without compression";
@@ -574,11 +564,12 @@ Session Support:
 
     // Build search options
     const options: {
-      reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
-      searchContextSize?: "low" | "medium" | "high";
-      outputVerbosity?: "low" | "medium" | "high";
+      reasoningEffort?: ReasoningEffort;
+      searchContextSize?: SearchContextSize;
+      outputVerbosity?: OutputVerbosity;
       outputFormatInstruction?: string;
       previousResponseId?: string;
+      compactedInput?: ResponseInput;
     } = {};
 
     if (reasoningEffort !== undefined) options.reasoningEffort = reasoningEffort;
@@ -591,6 +582,8 @@ Session Support:
     // Add previous response ID for session continuity
     if (session.lastResponseId) {
       options.previousResponseId = session.lastResponseId;
+    } else if (session.compactedInput) {
+      options.compactedInput = session.compactedInput;
     }
 
     // Execute search
@@ -655,10 +648,10 @@ Error handling: Individual query failures don't stop the batch; each query's res
       .min(1)
       .max(10),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high", "xhigh"])
+      .enum(["none", "low", "medium", "high", "xhigh", "max"])
       .optional()
       .describe(
-        "Reasoning effort level applied to all queries in the batch: 'none' (fastest), 'low' (efficient reasoning), 'medium' (balanced, recommended), 'high' (thorough), 'xhigh' (maximum deliberation). Use 'low' before 'none' when search, planning, or multi-step decisions still matter.",
+        "Outer GPT-5.6 orchestration and synthesis effort applied to all queries: 'none', 'low', 'medium' (balanced, recommended), 'high', 'xhigh', or 'max'. Inner web retrieval always uses 'none'.",
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -694,7 +687,7 @@ Error handling: Individual query failures don't stop the batch; each query's res
     outputFormat = "structured",
   }: {
     inputs: string[];
-    reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | undefined;
+    reasoningEffort?: ReasoningEffort | undefined;
     searchContextSize?: "low" | "medium" | "high" | undefined;
     outputVerbosity?: "low" | "medium" | "high" | undefined;
     outputFormatInstruction?: string | undefined;
@@ -702,12 +695,12 @@ Error handling: Individual query failures don't stop the batch; each query's res
   }) => {
     try {
       // Execute all searches in parallel with shared options
-	      const searchOptions: {
-	        reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
-	        searchContextSize?: "low" | "medium" | "high";
-	        outputVerbosity?: "low" | "medium" | "high";
-	        outputFormatInstruction?: string;
-	      } = {};
+      const searchOptions: {
+        reasoningEffort?: ReasoningEffort;
+        searchContextSize?: SearchContextSize;
+        outputVerbosity?: OutputVerbosity;
+        outputFormatInstruction?: string;
+      } = {};
       if (reasoningEffort !== undefined)
         searchOptions.reasoningEffort = reasoningEffort;
       if (searchContextSize !== undefined)
@@ -718,9 +711,16 @@ Error handling: Individual query failures don't stop the batch; each query's res
         searchOptions.outputFormatInstruction = outputFormatInstruction;
 
       // Execute searches with individual error handling (using legacy function for batch)
-      const results = await Promise.allSettled(
-        inputs.map((input) => executeSingleSearchLegacy(input, searchOptions))
-      );
+      const results = await mapWithConcurrency(inputs, 3, async (input) => {
+        try {
+          return {
+            status: "fulfilled" as const,
+            value: await executeSingleSearchLegacy(input, searchOptions),
+          };
+        } catch (reason) {
+          return { status: "rejected" as const, reason };
+        }
+      });
 
       // Process results based on output format
       if (outputFormat === "json") {
@@ -891,7 +891,6 @@ server.resource(
   "system-prompt",
   "web-search://system-prompt",
   {
-    name: "System Prompt",
     description: "System prompt used for web searches",
     mimeType: "text/markdown",
   },

@@ -1,125 +1,47 @@
-# GPT-5.5 Migration - Test Results
+# GPT-5.6 Sol and Programmatic Tool Calling - Test Results
 
-**Date**: 2026-05-15
-**Version**: 1.2.0
-**Status**: All local checks passed
+**Date**: 2026-08-12
+**Version**: 2.0.0
+**Status**: Passed
 
-## Build Verification
+## Verified behavior
 
-### Compilation
-- Passed: TypeScript compilation successful
-- Passed: Build artifacts generated correctly
+- The runtime and nested search requests returned `gpt-5.6-sol` exclusively.
+- Programmatic Tool Calling produced `program`, `function_call`, `program_output`, and final `message` items.
+- The strict `search_web` function preserved program caller metadata and returned structured answers, URL citations, and consulted sources.
+- Search, opened-page, and in-page action URLs are retained in the structured consulted-source list.
+- Incomplete and failed inner Responses are returned to the PTC program as structured errors, including available failure details.
+- Search execution is bounded to five inner calls and eight outer PTC rounds.
+- Batch execution is bounded to three concurrent workflows while preserving input order.
+- Stored-response continuation returned a linked answer.
+- Standalone compaction output was replayed as input and the next turn completed successfully.
+- The published MCP tool inputs, session response envelope, and batch output shapes remain compatible with v1.x; `max` is newly accepted for outer reasoning effort.
 
-### Build Artifacts
-- Passed: `build/index.js` (32,589 bytes) - executable
-- Passed: `build/SYSTEM_PROMPT.md` (4,802 bytes) - copied
-- Passed: `build/index.d.ts` (66 bytes) - type definitions
-- Passed: `build/index.js.map` (21,764 bytes) - source map
+## Commands and results
 
-## Configuration Tests
+| Command | Result |
+| --- | --- |
+| `pnpm test` | Passed: 11 tests, 0 failures |
+| `pnpm build` | Passed: TypeScript compiled and runtime assets copied |
+| `make check` | Passed: build artifacts verified |
+| `pnpm test:live` | Passed: live GPT-5.6 Sol/PTC, citations, state, and compaction |
+| `pnpm audit --prod` | Passed: no known vulnerabilities |
+| Local MCP protocol smoke | Passed: tools and system-prompt resource discovered |
+| `npm pack --dry-run` | Passed: publishable package assembled |
+| Missing-key startup smoke | Passed: exited 1 with an actionable error |
+| `git diff --check` | Passed |
+| Tracked-patch credential scan | Passed: no API-key-shaped value found |
 
-### Model Configuration
-- Passed: Model hard-coded to `gpt-5.5`
-- Passed: `OPENAI_MODEL` environment variable remains removed
-- Passed: Historical changelog references may mention older models, but active runtime configuration uses GPT-5.5
+## Live smoke evidence
 
-### Reasoning Effort Options
-- Passed: `none` and `xhigh` remain available in all tool schemas
-- Passed: Type definitions remain `"none" | "low" | "medium" | "high" | "xhigh"`
-- Passed: Tool descriptions recommend `medium` as balanced and `low` before `none` when search, planning, or multi-step decisions matter
+- Model: `gpt-5.6-sol`
+- PTC rounds: 5
+- Inner searches: 4
+- Outer tokens: 6,391
+- Inner tokens: 32,999
+- Required response item types missing: none
+- Unexpected returned models: none
+- Initial and follow-up answers contained clickable links
+- Post-compaction continuation completed
 
-### Version Consistency
-- Passed: package.json: 1.2.0
-- Passed: index.ts server instance: 1.2.0
-- Passed: CHANGELOG.md: Unreleased entry
-
-### Compaction Defaults
-- Passed: `compactionTokenThreshold` default remains 200,000
-- Passed: `compactionQueryThreshold` default remains 20
-- Passed: `sessionTtlMs` default remains 14,400,000 (4 hours)
-
-## System Prompt Verification
-
-### GPT-5.5 Optimizations
-- Passed: Mentions GPT-5.5 explicitly
-- Passed: Defines outcome-first answers and clear stopping conditions
-- Passed: Adaptive verbosity control remains documented
-- Passed: Source verification and citation instructions remain intact
-- Passed: Structured response template remains intact
-- Passed: High-risk self-check remains intact
-- Passed: All content remains in English
-
-## Batch Output Enhancements
-
-### Structured Format Features
-- Passed: Executive summary with statistics
-- Passed: Success rate calculation
-- Passed: Query overview listing
-- Passed: Individual result sections with metadata
-- Passed: Success/failure indicators
-- Passed: Completion summary footer
-- Passed: Enhanced markdown formatting
-
-## Runtime Smoke Tests
-
-### API Key Validation
-- Passed: Server exits with an error when `OPENAI_API_KEY` is missing
-- Passed: Error message remains clear and actionable
-- Passed: Exit code remains 1
-
-### Server Initialization
-- Not run in this local verification pass because it requires a valid OpenAI API key and MCP client session.
-
-## Documentation Review
-
-### README.md
-- Passed: GPT-5.5 behavior and access requirements highlighted
-- Passed: Migration guide updated
-- Passed: Environment variables documented
-- Passed: Active examples use GPT-5.5
-- Passed: Unsupported older-model benchmark, context-window, and pricing claims removed
-
-### CHANGELOG.md
-- Passed: Unreleased entry describes GPT-5.5 migration
-- Passed: Documentation and prompt updates listed
-- Passed: All in English
-
-### Makefile
-- Passed: Build/check targets remain unchanged
-- Passed: Help menu remains functional
-
-## Functional Capabilities
-
-### MCP Server Features
-- Passed: Single web search tool (`web-search`)
-- Passed: Batch web search tool (`web-search-batch`)
-- Passed: System prompt resource
-- Passed: Pre-configured prompts (debug-error, compare-libraries, etc.)
-
-### Configuration Options
-- Passed: Search context size: low/medium/high
-- Passed: Reasoning effort: none/low/medium/high/xhigh
-- Passed: Output verbosity: low/medium/high
-- Passed: Custom system prompt support
-- Passed: Configurable timeout and retries
-
-## Test Summary
-
-| Category | Status |
-|----------|--------|
-| Build | Passed |
-| Configuration | Passed |
-| System Prompt | Passed |
-| Documentation | Passed |
-| Runtime API key validation | Passed |
-
-## Recommendations for Production Use
-
-### Before Deployment
-1. Verify the OpenAI API key has GPT-5.5 access
-2. Test with an actual MCP client for end-to-end validation
-3. Review custom prompts for assumptions inherited from older GPT-5 behavior
-
-## Conclusion
-
-The GPT-5.5 migration is complete for local code, prompt, and documentation surfaces. `make check` passes, and the missing API-key runtime path still exits cleanly with an actionable error.
+The live smoke intentionally uses the configured API key and incurs Responses API and web-search usage. It is excluded from the default deterministic test command.

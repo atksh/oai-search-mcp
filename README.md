@@ -1,115 +1,18 @@
-# oai-search-mcp (GPT-5.5)
+# oai-search-mcp (GPT-5.6 Sol)
 
-MCP server that enables AI agents to leverage OpenAI's GPT-5.5 model with powerful web search capabilities. By registering this server with any AI coding agent, the agent can autonomously consult GPT-5.5 to solve complex problems through intelligent web searches.
+MCP server that gives AI agents web research powered by OpenAI's `gpt-5.6-sol` model and Programmatic Tool Calling (PTC).
 
-## Why GPT-5.5?
+Each MCP query runs a bounded PTC workflow. GPT-5.6 Sol writes JavaScript that may invoke a strict, read-only `search_web` function. The server fulfills each function call with a separate Responses API request using the stable `web_search` tool, returns citation and source metadata to the program, and continues until GPT-5.6 produces a final answer.
 
-GPT-5.5 is a strong fit for production search and research workflows that need:
+## Requirements
 
-- **Efficient reasoning**: Strong results with fewer reasoning tokens in complex, tool-heavy, and multi-step workflows
-- **Outcome-first execution**: Better adherence to clear goals, success criteria, evidence rules, and output shape
-- **Precise tool use**: Stronger tool selection and argument discipline on large or long-running tool surfaces
-- **Grounded long-context retrieval**: Designed for coding use cases, grounded assistants, and research workflows
-- **Modern Responses features**: Supports prompt caching, hosted tools, tool search, compaction, and stored conversation state
-
-## Use Cases
-
-### 🐛 When You're Stuck Debugging
-
-GPT-5.5's web search can scan GitHub issues, Stack Overflow, and documentation to find solutions for niche problems.
-
-**Example prompts:**
-```
-> I'm getting the following error on startup, please fix it. If it's too difficult, ask oai.
-> [Paste error message here]
-```
-```
-> The WebSocket connection isn't working. Please debug it. If you don't know how, ask oai.
-```
-
-### 📚 When You Need Latest Library Information
-
-Get answers from powerful web search even when documentation is scattered or incomplete.
-
-**Example prompts:**
-```
-> I want to upgrade this library to v2. Proceed while consulting with oai.
-```
-```
-> I was told this option doesn't exist. It might have been removed. Ask oai what to specify instead.
-```
-
-### 🧩 When Tackling Complex Tasks
-
-Use GPT-5.5 not just for search, but as a design consultant and problem-solving partner.
-
-**Example prompts:**
-```
-> I want to create a collaborative editor. Please design it and ask oai for a design review.
-```
-
-The AI agent may autonomously decide to consult GPT-5.5 when it deems necessary, dramatically expanding the range of problems it can solve independently!
+- Node.js 22 or newer
+- An OpenAI API key with GPT-5.6 Sol and Programmatic Tool Calling access
+- An MCP-compatible client
 
 ## Installation
 
-### npx (Recommended)
-
-#### Claude Desktop / Claude Code
-
-```sh
-claude mcp add oai \
-  -s user \  # Omit this line to install in project scope
-  -e OPENAI_API_KEY=your-api-key \
-  -e SEARCH_CONTEXT_SIZE=medium \
-  -e REASONING_EFFORT=medium \
-  -e OUTPUT_VERBOSITY=medium \
-  -e OPENAI_API_TIMEOUT=300000 \
-  -e OPENAI_MAX_RETRIES=3 \
-  -- npx oai-search-mcp
-```
-
-#### Manual JSON Configuration
-
-Add to your MCP settings file:
-
-```jsonc
-{
-  "mcpServers": {
-    "oai-search": {
-      "command": "npx",
-      "args": ["oai-search-mcp"],
-	  "env": {
-	    "OPENAI_API_KEY": "your-api-key",
-	    // Optional: low, medium, high (default: medium)
-	    "SEARCH_CONTEXT_SIZE": "medium",
-	    // Optional: none, low, medium, high, xhigh (default: medium)
-	    "REASONING_EFFORT": "medium",
-	    // Optional: low, medium, high (default: medium)
-	    "OUTPUT_VERBOSITY": "medium",
-        // Optional: API timeout in milliseconds (default: 300000)
-        "OPENAI_API_TIMEOUT": "300000",
-        // Optional: Maximum number of retries (default: 3)
-        "OPENAI_MAX_RETRIES": "3",
-        // Optional: Custom system prompt (uses default if not specified)
-        "SYSTEM_PROMPT": "Your custom instructions here"
-      }
-    }
-  }
-}
-```
-
-### Local Setup
-
-If you want to download and run the code locally:
-
-```bash
-git clone https://github.com/atksh/oai-search-mcp.git
-cd oai-search-mcp
-pnpm install
-pnpm build
-```
-
-#### Claude Desktop / Claude Code
+### npx
 
 ```sh
 claude mcp add oai \
@@ -120,17 +23,17 @@ claude mcp add oai \
   -e OUTPUT_VERBOSITY=medium \
   -e OPENAI_API_TIMEOUT=300000 \
   -e OPENAI_MAX_RETRIES=3 \
-  -- node /path/to/oai-search-mcp/build/index.js
+  -- npx oai-search-mcp
 ```
 
-#### Manual JSON Configuration
+### Manual MCP configuration
 
 ```jsonc
 {
   "mcpServers": {
     "oai-search": {
-      "command": "node",
-      "args": ["/path/to/oai-search-mcp/build/index.js"],
+      "command": "npx",
+      "args": ["oai-search-mcp"],
       "env": {
         "OPENAI_API_KEY": "your-api-key",
         "SEARCH_CONTEXT_SIZE": "medium",
@@ -144,230 +47,136 @@ claude mcp add oai \
 }
 ```
 
-## Environment Variables
+### Local development
+
+```sh
+git clone https://github.com/atksh/oai-search-mcp.git
+cd oai-search-mcp
+pnpm install
+pnpm build
+```
+
+Use `node /path/to/oai-search-mcp/build/index.js` as the MCP command.
+
+## Environment variables
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `OPENAI_API_KEY` | **Yes** | - | Your OpenAI API key |
-| `SEARCH_CONTEXT_SIZE` | No | `medium` | Search context size<br>**Values**: `low`, `medium`, `high`<br>Higher values retrieve more search results for better coverage |
-| `REASONING_EFFORT` | No | `medium` | GPT-5.5 reasoning effort level<br>**Values**: `none`, `low`, `medium`, `high`, `xhigh`<br>`none`: No reasoning, fastest for latency-critical tasks<br>`low`: Efficient reasoning for lighter search and analysis<br>`medium`: Balanced (recommended)<br>`high`: Thorough, slower<br>`xhigh`: Maximum deliberation for hardest tasks |
-| `OUTPUT_VERBOSITY` | No | `medium` | Response detail level<br>**Values**: `low`, `medium`, `high`<br>`low`: Concise answers<br>`medium`: Balanced detail<br>`high`: Comprehensive with full context |
-| `OPENAI_API_TIMEOUT` | No | `300000` | API request timeout in milliseconds<br>Default: 300000 (5 minutes) |
-| `OPENAI_MAX_RETRIES` | No | `3` | Maximum retries for failed requests<br>The SDK automatically retries on rate limits (429), server errors (5xx), and connection errors |
-| `SYSTEM_PROMPT` | No | _(default)_ | Custom system prompt for response style<br>If not provided, uses the built-in prompt optimized for GPT-5.5 |
-| `SESSION_TTL_MS` | No | `14400000` | Session time-to-live in milliseconds (default: 4 hours) |
-| `MAX_SESSIONS` | No | `100` | Maximum number of concurrent sessions |
-| `AUTO_COMPACTION` | No | `true` | Enable automatic conversation compaction |
-| `COMPACTION_QUERY_THRESHOLD` | No | `20` | Number of queries before triggering compaction |
-| `COMPACTION_TOKEN_THRESHOLD` | No | `200000` | Token count threshold for triggering compaction |
-| `LOG_LEVEL` | No | `info` | Logging level<br>**Values**: `debug`, `info`, `warn`, `error` |
+| `OPENAI_API_KEY` | Yes | — | OpenAI API key; never commit it |
+| `SEARCH_CONTEXT_SIZE` | No | `medium` | Inner web-search context: `low`, `medium`, or `high` |
+| `REASONING_EFFORT` | No | `medium` | Outer PTC orchestration/synthesis effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max` |
+| `OUTPUT_VERBOSITY` | No | `medium` | Final answer verbosity: `low`, `medium`, or `high` |
+| `OPENAI_API_TIMEOUT` | No | `300000` | Per-request timeout in milliseconds |
+| `OPENAI_MAX_RETRIES` | No | `3` | SDK retry count for retryable API failures |
+| `SYSTEM_PROMPT` | No | Built in | Replacement instructions for research and final-answer behavior |
+| `SESSION_TTL_MS` | No | `14400000` | Session inactivity TTL (4 hours) |
+| `MAX_SESSIONS` | No | `100` | Maximum in-memory sessions |
+| `AUTO_COMPACTION` | No | `true` | Enable stored-conversation compaction |
+| `COMPACTION_QUERY_THRESHOLD` | No | `20` | Queries before compaction |
+| `COMPACTION_TOKEN_THRESHOLD` | No | `200000` | Outer conversation tokens before compaction |
+| `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
 
-## Features
+`REASONING_EFFORT` applies only to the outer orchestration and final synthesis. Inner retrieval calls always use `none` so high-effort settings are not multiplied across every search.
 
-### 🔍 Single Web Search
+## MCP tools
 
-Execute a single intelligent web search with GPT-5.5:
+### `web-search`
 
-```typescript
-// Tool: web-search
+```json
 {
-  "input": "How to optimize React rendering performance?",
+  "input": "Compare the current Node.js LTS releases and cite official sources.",
   "reasoningEffort": "medium",
   "searchContextSize": "high",
-  "outputVerbosity": "high"
+  "outputVerbosity": "medium"
 }
 ```
 
-**Response format (JSON):**
+The response remains compatible with v1:
+
 ```json
 {
   "sessionId": "V1StGXR8_Z5jdHi6B-myT",
-  "result": "To optimize React rendering performance...",
+  "result": "Research answer with clickable source links",
   "warning": null
 }
 ```
 
-### 🔄 Session Support (Conversation Continuity)
+Pass `sessionId` on a later call to continue the stored OpenAI Responses conversation. Sessions expire after four hours by default.
 
-Maintain conversation context across multiple queries using session IDs:
+### `web-search-batch`
 
-```typescript
-// First query - session auto-created
-{
-  "input": "What is React 19?"
-}
-// Response: { "sessionId": "abc123...", "result": "React 19 is..." }
-
-// Follow-up query - context preserved
-{
-  "input": "How do I upgrade from v18?",
-  "sessionId": "abc123..."
-}
-// Response: { "sessionId": "abc123...", "result": "To upgrade from React 18..." }
-```
-
-**Session behavior:**
-- **Auto-creation**: If `sessionId` is omitted, a new session is created automatically
-- **Continuation**: Pass the returned `sessionId` to continue the conversation
-- **TTL**: Sessions expire after 4 hours of inactivity (configurable via `SESSION_TTL_MS`)
-- **Invalid ID**: Returns an error if the session ID is invalid or expired
-
-### 🗜️ Automatic Compaction
-
-Long conversations are automatically compacted to manage context size:
-
-- **Query threshold**: Compacts after 20 queries (configurable via `COMPACTION_QUERY_THRESHOLD`)
-- **Token threshold**: Compacts when total tokens exceed 200,000 (configurable via `COMPACTION_TOKEN_THRESHOLD`)
-- **Graceful handling**: If compaction fails, the conversation continues with a warning
-
-### 📦 Batch Web Search
-
-Execute multiple searches in parallel for efficiency:
-
-```typescript
-// Tool: web-search-batch
+```json
 {
   "inputs": [
     "React hooks best practices",
-    "Vue 3 composition API",
-    "Angular signals"
+    "Vue composition API updates",
+    "Angular signals guidance"
   ],
   "reasoningEffort": "low",
-  "outputFormat": "structured"  // structured, plain, or json
+  "outputFormat": "json"
 }
 ```
 
-**Output formats:**
-- `structured` (default): Enhanced presentation with executive summary, query overview, individual results with metadata, and completion summary
-- `plain`: All results combined in a single text block with markdown formatting
-- `json`: Structured JSON with status, results, and errors for programmatic processing
+The batch tool still accepts 1–10 independent inputs and supports `structured`, `plain`, and `json` output. It runs at most three PTC workflows concurrently and preserves input order.
 
-### 📋 MCP Resources
+## PTC limits and cost behavior
 
-Access the system prompt configuration:
+- Every MCP query uses `gpt-5.6-sol` for its outer PTC orchestration and final answer.
+- A program may make at most five inner `search_web` calls.
+- A workflow may continue for at most eight outer Responses rounds.
+- Each inner function call makes another `gpt-5.6-sol` Responses request with `reasoning.effort: "none"` and the stable `web_search` tool.
+- A full ten-item batch can therefore make at most fifty inner web-search requests.
+- Malformed calls, unknown functions, incomplete responses, and budget overruns fail with bounded errors; the server does not start an unbounded fallback loop.
+- Logs separately report outer/inner tokens, cache reads/writes, PTC rounds, search-call counts, returned models, latency, and response item types.
 
-```typescript
-// Resource: system-prompt
-// URI: web-search://system-prompt
+PTC can reduce intermediate context by filtering and deduplicating results in hosted JavaScript, but this nested design can cost more and take longer than one direct web-search request. Evaluate it against your real workload.
+
+## Citations
+
+Inner web-search responses request the complete `web_search_call.action.sources` list and retain URL-citation metadata. The outer response is instructed to use clickable Markdown links. If a cited URL is absent from the generated answer, the server appends a deduplicated Sources section.
+
+## Development and verification
+
+```sh
+pnpm test
+pnpm build
+make check
+npm pack --dry-run
 ```
 
-### 🎯 MCP Prompts
+The deterministic test suite does not require an API key. Run the opt-in live GPT-5.6/PTC test separately:
 
-Pre-configured prompt templates for common tasks:
-
-- `debug-error`: Debug and troubleshoot error messages
-- `compare-libraries`: Compare multiple libraries or technologies
-- `research-api`: Research API or library documentation
-- `explore-documentation`: Explore and understand technology documentation
-
-## GPT-5.5 Optimizations
-
-This MCP server is specifically optimized for GPT-5.5's strengths:
-
-### Outcome-First Answers
-
-The system prompt asks GPT‑5.5 to identify the requested outcome, answer directly, and stop once the answer, evidence, and caveats are complete.
-
-### Explicit Verbosity Clamps
-
-GPT‑5.5 is direct by default, so the prompt sets concrete length/shape targets and respects the runtime’s `OUTPUT_VERBOSITY` instruction.
-
-### Reasoning Effort Knob
-
-Use `REASONING_EFFORT=low` for efficient everyday searches that still benefit from reasoning. Reserve `none` for latency-critical tasks that need little or no multi-step analysis:
-- Fast fact retrieval
-- Simple status checks
-- Lightweight classification
-- Straightforward questions with narrow scope
-
-Use `medium`, `high`, or `xhigh` for:
-- Complex problem solving
-- Multi-step analysis
-- Design decisions
-- Debugging difficult issues
-
-### Ambiguity & Freshness Handling
-
-The prompt instructs GPT‑5.5 to avoid hallucinating on underspecified queries, cover multiple plausible intents with assumptions, and rely on web research for time‑sensitive facts.
-
-## Tips for Best Results
-
-1. **Be specific in queries**: "How to fix React useState closure issue" works better than "React problem"
-2. **Use batch search for comparisons**: Compare multiple options simultaneously for consistent analysis
-3. **Adjust reasoning effort**: Use `none` for speed, `high` for difficult problems
-4. **Leverage verbosity control**: Set `low` for quick answers, `high` for learning in-depth
-5. **Customize the system prompt**: Tailor response style to your team's needs
-6. **Use sessions for follow-ups**: Pass `sessionId` to ask follow-up questions without repeating context
-
-## Migration from Earlier Versions
-
-### From v1.1.x to v1.2.0
-
-**Changes:**
-1. Model upgraded from GPT-5.2 to GPT-5.5
-2. Default `COMPACTION_TOKEN_THRESHOLD` increased from 50,000 to 200,000
-3. Default `COMPACTION_QUERY_THRESHOLD` increased from 10 to 20
-4. Default `SESSION_TTL_MS` increased from 7,200,000 (2h) to 14,400,000 (4h)
-5. Built-in system prompt refreshed for outcome-first answers, citation discipline, and clear stopping conditions
-
-**Migration steps:**
-1. Ensure your OpenAI API key has GPT-5.5 access
-2. Review your custom `COMPACTION_TOKEN_THRESHOLD` if set — the default is now 200,000
-3. Note: sessions now last 4 hours by default; override with `SESSION_TTL_MS` if needed
-4. Review custom `SYSTEM_PROMPT` values if you depend on older GPT-5.2 prompt behavior
-
-### From v1.0.x to v1.1.0
-
-**Breaking Change**: The `web-search` tool now returns JSON instead of plain text.
-
-**Before (v1.0.x):**
-```
-To optimize React rendering performance...
+```sh
+OPENAI_API_KEY=... pnpm test:live
 ```
 
-**After (v1.1.0):**
-```json
-{
-  "sessionId": "V1StGXR8_Z5jdHi6B-myT",
-  "result": "To optimize React rendering performance...",
-  "warning": null
-}
-```
+The live command verifies the returned model, `program`/`function_call`/`program_output`/`message` items, at least one inner search, final clickable source links, stored-response continuation, and continuation after standalone compaction output is replayed.
 
-**Migration steps:**
-1. Update any code that parses the response to extract `result` from the JSON
-2. Optionally use `sessionId` for conversation continuity
-3. Check for `warning` field for compaction status
+## Migration from v1.x
 
-**Note:** The `web-search-batch` tool response format is unchanged.
+Version 2.0 is a breaking release because it requires Node.js 22+ and changes the internal cost/latency profile.
 
-### From v0.x (multi-model) to v1.0.0
+1. Upgrade the runtime to Node.js 22 or newer.
+2. Ensure the API project can use `gpt-5.6-sol` and Programmatic Tool Calling.
+3. Keep `OPENAI_MODEL` removed; the server remains intentionally pinned to one model.
+4. Review rate and spend limits before using large batches.
+5. Existing MCP tool inputs, response envelopes, session IDs, and batch formats remain unchanged; `max` is newly accepted for `reasoningEffort`.
 
-If you're upgrading from a version that supported multiple models (GPT-5, O3, O4-mini):
+## MCP resources and prompts
 
-1. **Remove `OPENAI_MODEL` environment variable** - GPT-5.5 is now the only supported model
-2. **Update reasoning effort** - If you previously used `minimal`, switch to `none`; `xhigh` is available for hardest tasks
-3. **Review system prompt** - Now optimized specifically for GPT-5.5 characteristics
-4. **Check batch output** - Enhanced structured format with better presentation
+- Resource: `web-search://system-prompt`
+- Prompts: `debug-error`, `compare-libraries`, `research-api`, `explore-documentation`
 
-## Requirements
+## Security
 
-- Node.js 16 or higher
-- OpenAI API key with GPT-5.5 access
-- MCP-compatible client (Claude Desktop, Claude Code, etc.)
+Keep `OPENAI_API_KEY` in the MCP client's environment or a secret manager. Do not place real credentials in scripts, configuration examples, logs, issues, or commits. Revoke and rotate any credential that has been stored in plaintext.
 
 ## License
 
 MIT
 
-## Contributing
+## References
 
-Issues and pull requests are welcome! Please see the [GitHub repository](https://github.com/atksh/oai-search-mcp) for details.
-
-## Acknowledgments
-
-Built with:
-- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) by Anthropic
-- [OpenAI API](https://openai.com/api/) for GPT-5.5 access
-
-Optimized based on [OpenAI's GPT-5.5 Prompting Guide](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5).
+- [OpenAI GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model)
+- [OpenAI Programmatic Tool Calling guide](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling)
+- [OpenAI web search guide](https://developers.openai.com/api/docs/guides/tools-web-search)
