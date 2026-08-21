@@ -31,6 +31,14 @@ function response(
   output: Response["output"],
   totalTokens = 10,
 ): Response {
+  const outputText = output
+    .flatMap((item) =>
+      item.type === "message" ? item.content : [],
+    )
+    .filter((content) => content.type === "output_text")
+    .map((content) => content.text)
+    .join("");
+
   return {
     id,
     created_at: 0,
@@ -41,6 +49,7 @@ function response(
     model: MODEL,
     object: "response",
     output,
+    output_text: outputText,
     parallel_tool_calls: true,
     temperature: null,
     tool_choice: "auto",
@@ -108,6 +117,67 @@ function finalMessage(text: string) {
         annotations: [],
       },
     ],
+  };
+}
+
+function innerSearchResponse(
+  id: string,
+  query: string,
+  url = "https://developers.openai.com/example",
+  totalTokens = 7,
+) {
+  return response(
+    id,
+    [
+      {
+        type: "web_search_call",
+        id: `ws_${id}`,
+        status: "completed",
+        action: {
+          type: "search",
+          queries: [query],
+          sources: [{ type: "url", url }],
+        },
+      },
+      {
+        type: "message",
+        id: `msg_${id}`,
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: `Inner answer for ${query}`,
+            annotations: [
+              {
+                type: "url_citation",
+                title: "OpenAI example",
+                url,
+                start_index: 0,
+                end_index: 5,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    totalTokens,
+  );
+}
+
+function parsedOutput(requestInput: unknown, index = 0) {
+  assert.ok(Array.isArray(requestInput));
+  const output = Array.isArray(requestInput) ? requestInput[index] : undefined;
+  assert.equal(output?.type, "function_call_output");
+  if (output?.type !== "function_call_output") {
+    throw new Error("Expected a function_call_output");
+  }
+  return JSON.parse(String(output.output)) as {
+    status: string;
+    query: string;
+    error: string | null;
+    remaining_calls: number;
+    sources?: string[];
   };
 }
 
@@ -202,6 +272,8 @@ test("runs PTC, preserves caller linkage, extracts sources, and completes", asyn
   assert.deepEqual(client.requests[0]?.tool_choice, {
     type: "programmatic_tool_calling",
   });
+  assert.match(String(client.requests[0]?.instructions), /Search at most 5 times total/);
+  assert.match(String(client.requests[0]?.instructions), /5 search_web calls remain/);
   assert.equal(client.requests[0]?.reasoning?.context, "current_turn");
   assert.equal(client.requests[1]?.reasoning?.effort, "none");
   assert.equal(client.requests[1]?.tools?.[0]?.type, "web_search");
@@ -222,7 +294,9 @@ test("runs PTC, preserves caller linkage, extracts sources, and completes", asyn
       });
       const parsed = JSON.parse(String(output.output)) as {
         sources: string[];
+        remaining_calls: number;
       };
+      assert.equal(parsed.remaining_calls, 4);
       assert.deepEqual(parsed.sources, [
         "https://developers.openai.com/example",
         "https://developers.openai.com/opened",
@@ -265,24 +339,72 @@ test("replays standalone compaction output before the next user message", async 
   }
 });
 
-test("fails closed when a program exceeds its search-call budget", async () => {
+test("continues after a later round requests one search with 0 remaining", async () => {
+  const client = new FakeClient([
+    response("outer_1", [programCall("call_1", "one")]),
+    innerSearchResponse("inner_1", "one"),
+    response("outer_2", [programCall("call_2", "two")]),
+    response("outer_3", [finalMessage("Answer with gathered evidence")]),
+  ]);
+
+  const result = await executePtcSearch(client, "query", {
+    reasoningEffort: "medium",
+    searchContextSize: "medium",
+    outputVerbosity: "medium",
+    maxSearchCalls: 1,
+  });
+
+  assert.equal(result.responseId, "outer_3");
+  assert.match(result.text, /Answer with gathered evidence/);
+  assert.equal(result.metrics.innerSearchCalls, 1);
+  assert.equal(result.metrics.ptcRounds, 3);
+  assert.equal(client.requests.length, 4);
+  assert.equal(client.requests[1]?.input, "one");
+  assert.equal(client.requests[2]?.tool_choice, "none");
+  assert.match(String(client.requests[2]?.instructions), /0 search_web calls remain/);
+  assert.equal(client.requests[3]?.tool_choice, "none");
+
+  const rejected = parsedOutput(client.requests[3]?.input);
+  assert.equal(rejected.status, "error");
+  assert.equal(rejected.query, "two");
+  assert.equal(rejected.remaining_calls, 0);
+  assert.match(rejected.error ?? "", /0 remaining of 1/);
+});
+
+test("fulfills remaining slots and errors excess calls in the same batch", async () => {
   const client = new FakeClient([
     response("outer_1", [
       programCall("call_1", "one"),
       programCall("call_2", "two"),
     ]),
+    innerSearchResponse("inner_1", "one"),
+    response("outer_2", [finalMessage("Partial evidence synthesized")]),
   ]);
 
-  await assert.rejects(
-    executePtcSearch(client, "query", {
-      reasoningEffort: "medium",
-      searchContextSize: "medium",
-      outputVerbosity: "medium",
-      maxSearchCalls: 1,
-    }),
-    /budget exceeded/,
-  );
-  assert.equal(client.requests.length, 1);
+  const result = await executePtcSearch(client, "query", {
+    reasoningEffort: "medium",
+    searchContextSize: "medium",
+    outputVerbosity: "medium",
+    maxSearchCalls: 1,
+  });
+
+  assert.equal(result.responseId, "outer_2");
+  assert.match(result.text, /Partial evidence synthesized/);
+  assert.equal(result.metrics.innerSearchCalls, 1);
+  assert.equal(client.requests.length, 3);
+  assert.equal(client.requests[1]?.input, "one");
+  assert.equal(client.requests[2]?.tool_choice, "none");
+
+  const fulfilled = parsedOutput(client.requests[2]?.input, 0);
+  assert.equal(fulfilled.status, "success");
+  assert.equal(fulfilled.query, "one");
+  assert.equal(fulfilled.remaining_calls, 0);
+
+  const rejected = parsedOutput(client.requests[2]?.input, 1);
+  assert.equal(rejected.status, "error");
+  assert.equal(rejected.query, "two");
+  assert.equal(rejected.remaining_calls, 0);
+  assert.match(rejected.error ?? "", /0 remaining of 1/);
 });
 
 test("returns a structured error for malformed program arguments", async () => {

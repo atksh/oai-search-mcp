@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Search-budget hard fail**: When a PTC program requested more `search_web` calls than remained, the server threw and the MCP tool returned only `Error: Programmatic search budget exceeded`. Excess calls now receive a structured error, already-gathered evidence is kept, and the outer model continues to a final answer. Later rounds use `tool_choice: none` once the budget is spent.
+
+### Changed
+
+- **`search_web` output**: Each function result now includes `remaining_calls` so the hosted program can stop when the budget is exhausted.
+- **PTC instructions**: The outer prompt now interpolates the configured cap and remaining search count on every round.
+
 ## [2.0.0] - 2026-08-12
 
 ### Breaking Changes

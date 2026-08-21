@@ -126,7 +126,7 @@ The batch tool still accepts 1–10 independent inputs and supports `structured`
 - A workflow may continue for at most eight outer Responses rounds.
 - Each inner function call makes another `gpt-5.6-sol` Responses request with `reasoning.effort: "none"` and the stable `web_search` tool.
 - A full ten-item batch can therefore make at most fifty inner web-search requests.
-- Malformed calls, unknown functions, incomplete responses, and budget overruns fail with bounded errors; the server does not start an unbounded fallback loop.
+- Malformed calls, unknown functions, incomplete responses, and budget overruns return structured errors to the program, including `remaining_calls`. The outer model then synthesizes from gathered evidence. The five-call and eight-round caps still apply; the server does not start an unbounded fallback loop.
 - Logs separately report outer/inner tokens, cache reads/writes, PTC rounds, search-call counts, returned models, latency, and response item types.
 
 PTC can reduce intermediate context by filtering and deduplicating results in hosted JavaScript, but this nested design can cost more and take longer than one direct web-search request. Evaluate it against your real workload.

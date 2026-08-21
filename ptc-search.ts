@@ -38,6 +38,7 @@ export interface SearchWebResult {
   citations: Citation[];
   sources: string[];
   error: string | null;
+  remaining_calls: number;
 }
 
 export interface SearchRunMetrics {
@@ -112,8 +113,17 @@ const searchOutputSchema = {
     citations: { type: "array", items: citationSchema },
     sources: { type: "array", items: { type: "string" } },
     error: { type: ["string", "null"] },
+    remaining_calls: { type: "number" },
   },
-  required: ["status", "query", "answer", "citations", "sources", "error"],
+  required: [
+    "status",
+    "query",
+    "answer",
+    "citations",
+    "sources",
+    "error",
+    "remaining_calls",
+  ],
   additionalProperties: false,
 } as const;
 
@@ -131,9 +141,11 @@ export const PTC_TOOLS: Tool[] = [
   { type: "programmatic_tool_calling" },
 ];
 
-const PTC_INSTRUCTIONS = `<tool_orchestration>
+function ptcInstructions(maxSearchCalls: number, remaining: number): string {
+  return `<tool_orchestration>
 Use Programmatic Tool Calling for the bounded retrieval stage using only search_web.
-Run independent searches concurrently when useful. Search at most five times total.
+Run independent searches concurrently when useful. Search at most ${maxSearchCalls} times total.
+${remaining} search_web calls remain in this query. If remaining is 0, do not call search_web; reduce findings and return control.
 Use only the documented query input and result fields. Do not repeat a completed query.
 Deduplicate and reduce the intermediate results before returning control to the model.
 
@@ -145,6 +157,7 @@ After the program finishes, produce the final user-facing answer yourself. Prese
 clickable Markdown links for web-derived claims. If any required evidence is missing,
 state the limitation instead of inventing it.
 </tool_orchestration>`;
+}
 
 function usageValue(response: Response, key: "total_tokens"): number;
 function usageValue(
@@ -210,7 +223,11 @@ function extractSources(response: Response): string[] {
   return dedupeStrings(sources);
 }
 
-function errorResult(query: string, error: unknown): SearchWebResult {
+function errorResult(
+  query: string,
+  error: unknown,
+  remainingCalls = 0,
+): SearchWebResult {
   return {
     status: "error",
     query,
@@ -218,6 +235,7 @@ function errorResult(query: string, error: unknown): SearchWebResult {
     citations: [],
     sources: [],
     error: error instanceof Error ? error.message : String(error),
+    remaining_calls: remainingCalls,
   };
 }
 
@@ -276,6 +294,7 @@ async function runInnerSearch(
       citations: extractCitations(response),
       sources: extractSources(response),
       error: null,
+      remaining_calls: 0,
     },
   };
 }
@@ -303,6 +322,33 @@ function appendSources(text: string, citations: Citation[]): string {
   if (missing.length === 0) return text;
   const links = missing.map(({ title, url }) => `- [${title || url}](${url})`);
   return `${text}\n\n## Sources\n\n${links.join("\n")}`;
+}
+
+function tryParseQuery(argumentsJson: string): string {
+  try {
+    return parseSearchArguments(argumentsJson).query;
+  } catch {
+    return "";
+  }
+}
+
+function functionCallOutput(
+  call: ResponseFunctionToolCall,
+  result: SearchWebResult,
+) {
+  return {
+    type: "function_call_output" as const,
+    call_id: call.call_id,
+    output: JSON.stringify(result),
+    ...(call.caller !== undefined && { caller: call.caller }),
+  };
+}
+
+function withRemainingCalls(
+  result: SearchWebResult,
+  remainingCalls: number,
+): SearchWebResult {
+  return { ...result, remaining_calls: remainingCalls };
 }
 
 export async function executePtcSearch(
@@ -335,17 +381,23 @@ export async function executePtcSearch(
       : input;
 
   for (let round = 1; round <= maxPtcRounds; round++) {
+    const remainingAtStart = maxSearchCalls - metrics.innerSearchCalls;
     const request: ResponseCreateParamsNonStreaming = {
       model: MODEL,
       input: nextInput,
-      instructions: [options.instructions, PTC_INSTRUCTIONS]
+      instructions: [
+        options.instructions,
+        ptcInstructions(maxSearchCalls, remainingAtStart),
+      ]
         .filter(Boolean)
         .join("\n\n"),
       tools: PTC_TOOLS,
       tool_choice:
-        round === 1
-          ? { type: "programmatic_tool_calling" }
-          : "auto",
+        remainingAtStart === 0
+          ? "none"
+          : round === 1
+            ? { type: "programmatic_tool_calling" }
+            : "auto",
       parallel_tool_calls: true,
       reasoning: {
         effort: options.reasoningEffort,
@@ -372,50 +424,62 @@ export async function executePtcSearch(
     const calls = getFunctionCalls(response);
     if (calls.length > 0) {
       const remaining = maxSearchCalls - metrics.innerSearchCalls;
-      if (calls.length > remaining) {
-        throw new Error(
-          `Programmatic search budget exceeded: ${calls.length} calls requested with ${remaining} remaining`,
-        );
-      }
-
       const outputs = await Promise.all(
-        calls.map(async (call) => {
-          let result: SearchWebResult;
-          if (call.name !== SEARCH_FUNCTION_NAME) {
-            result = errorResult("", `Unknown PTC function: ${call.name}`);
-          } else {
-            let query = "";
-            try {
-              ({ query } = parseSearchArguments(call.arguments));
-              metrics.innerSearchCalls++;
-              const inner = await runInnerSearch(
-                client,
-                query,
-                options.searchContextSize,
-              );
-              metrics.innerTokens += usageValue(inner.response, "total_tokens");
-              metrics.innerModels.push(inner.response.model);
-              metrics.innerCachedTokens += usageValue(
-                inner.response,
-                "cached_tokens",
-              );
-              metrics.innerCacheWriteTokens += usageValue(
-                inner.response,
-                "cache_write_tokens",
-              );
-              allCitations.push(...inner.result.citations);
-              result = inner.result;
-            } catch (error) {
-              result = errorResult(query, error);
-            }
+        calls.map(async (call, index) => {
+          const remainingAfterSlot = Math.max(0, remaining - index - 1);
+
+          if (index >= remaining) {
+            return functionCallOutput(
+              call,
+              errorResult(
+                tryParseQuery(call.arguments),
+                `Programmatic search budget exceeded: 0 remaining of ${maxSearchCalls}`,
+                0,
+              ),
+            );
           }
 
-          return {
-            type: "function_call_output" as const,
-            call_id: call.call_id,
-            output: JSON.stringify(result),
-            ...(call.caller !== undefined && { caller: call.caller }),
-          };
+          if (call.name !== SEARCH_FUNCTION_NAME) {
+            return functionCallOutput(
+              call,
+              errorResult(
+                "",
+                `Unknown PTC function: ${call.name}`,
+                remaining,
+              ),
+            );
+          }
+
+          let query = "";
+          try {
+            ({ query } = parseSearchArguments(call.arguments));
+            metrics.innerSearchCalls++;
+            const inner = await runInnerSearch(
+              client,
+              query,
+              options.searchContextSize,
+            );
+            metrics.innerTokens += usageValue(inner.response, "total_tokens");
+            metrics.innerModels.push(inner.response.model);
+            metrics.innerCachedTokens += usageValue(
+              inner.response,
+              "cached_tokens",
+            );
+            metrics.innerCacheWriteTokens += usageValue(
+              inner.response,
+              "cache_write_tokens",
+            );
+            allCitations.push(...inner.result.citations);
+            return functionCallOutput(
+              call,
+              withRemainingCalls(inner.result, remainingAfterSlot),
+            );
+          } catch (error) {
+            return functionCallOutput(
+              call,
+              errorResult(query, error, remainingAfterSlot),
+            );
+          }
         }),
       );
 
