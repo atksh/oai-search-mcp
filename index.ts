@@ -177,20 +177,49 @@ function parseBoolWithFallback(
   return value.toLowerCase() === "true";
 }
 
+// Parse an enum-valued env var. An unknown value would otherwise reach the
+// API (or silence the logger) on every request, so warn and use the default.
+function parseEnumWithFallback<T extends string>(
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = raw.trim().toLowerCase();
+  if ((allowed as readonly string[]).includes(value)) return value as T;
+  console.error(
+    `Warning: ignoring ${name}=${JSON.stringify(raw)} (expected one of ${allowed.join(", ")}); using ${fallback}.`,
+  );
+  return fallback;
+}
+
+const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+const SEARCH_CONTEXT_SIZES = ["low", "medium", "high"] as const;
+const OUTPUT_VERBOSITIES = ["low", "medium", "high"] as const;
+const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
+
 // Configuration from environment variables
 const config = {
   apiKey: process.env.OPENAI_API_KEY,
   model: MODEL,
   maxRetries: parseIntWithFallback(process.env.OPENAI_MAX_RETRIES, 3),
   timeout: parseIntWithFallback(process.env.OPENAI_API_TIMEOUT, 300000),
-  searchContextSize: (process.env.SEARCH_CONTEXT_SIZE || "medium") as
-    | "low"
-    | "medium"
-    | "high",
-  reasoningEffort: (process.env.REASONING_EFFORT ||
-    "medium") as ReasoningEffort,
-  outputVerbosity: (process.env.OUTPUT_VERBOSITY ||
-    "medium") as OutputVerbosity,
+  searchContextSize: parseEnumWithFallback<SearchContextSize>(
+    "SEARCH_CONTEXT_SIZE",
+    SEARCH_CONTEXT_SIZES,
+    "medium",
+  ),
+  reasoningEffort: parseEnumWithFallback<ReasoningEffort>(
+    "REASONING_EFFORT",
+    REASONING_EFFORTS,
+    "high",
+  ),
+  outputVerbosity: parseEnumWithFallback<OutputVerbosity>(
+    "OUTPUT_VERBOSITY",
+    OUTPUT_VERBOSITIES,
+    "medium",
+  ),
   systemPrompt: process.env.SYSTEM_PROMPT,
   // Session management
   sessionTtlMs: parseIntWithFallback(process.env.SESSION_TTL_MS, 14400000), // 4 hours
@@ -206,7 +235,7 @@ const config = {
     200000
   ),
   // Logging
-  logLevel: (process.env.LOG_LEVEL || "info") as LogLevel,
+  logLevel: parseEnumWithFallback<LogLevel>("LOG_LEVEL", LOG_LEVELS, "info"),
 };
 
 // Initialize logger and session store
@@ -466,10 +495,10 @@ Session Support:
         "Session ID for conversation continuity. If omitted, a new session is created. Pass the sessionId from a previous response to continue the conversation with context."
       ),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high", "xhigh", "max"])
+      .enum(REASONING_EFFORTS)
       .optional()
       .describe(
-        "Outer GPT-5.6 orchestration and synthesis effort: 'none', 'low', 'medium' (balanced, recommended), 'high', 'xhigh', or 'max' (hardest quality-first tasks). Inner web retrieval always uses 'none' to bound multiplied cost."
+        `Outer ${MODEL} orchestration and synthesis effort: 'none', 'low', 'medium', 'high', 'xhigh', or 'max' (hardest quality-first tasks). Server default: '${config.reasoningEffort}'. Inner web retrieval always uses 'none' to bound multiplied cost.`
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -631,7 +660,7 @@ Use this tool when you need to:
 - Gather information from various angles on the same subject
 - Perform independent searches that don't depend on each other
 
-All queries are executed concurrently, and results are returned in the same order as the input array. The specified options (reasoning effort, search context size, verbosity, format) are applied uniformly to all queries in the batch.
+Queries run in parallel, up to 3 at a time, and results are returned in the same order as the input array. The specified options (reasoning effort, search context size, verbosity, format) are applied uniformly to all queries in the batch.
 
 The tool supports multiple output formats:
 - 'structured' (default): Each query result is returned as a separate content block with metadata, making it easy to parse and process individual results
@@ -643,15 +672,15 @@ Error handling: Individual query failures don't stop the batch; each query's res
     inputs: z
       .array(z.string())
       .describe(
-        "Array of search queries to execute in parallel. Each query should be independent and can be processed concurrently. Results are returned in the same order as this array. Maximum 10 queries per batch. Example: ['React hooks best practices', 'Vue 3 composition API', 'Angular dependency injection'].",
+        "Array of search queries to execute in parallel, up to 3 at a time. Each query should be independent. Results are returned in the same order as this array. Maximum 10 queries per batch. Example: ['React hooks best practices', 'Vue 3 composition API', 'Angular dependency injection'].",
       )
       .min(1)
       .max(10),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high", "xhigh", "max"])
+      .enum(REASONING_EFFORTS)
       .optional()
       .describe(
-        "Outer GPT-5.6 orchestration and synthesis effort applied to all queries: 'none', 'low', 'medium' (balanced, recommended), 'high', 'xhigh', or 'max'. Inner web retrieval always uses 'none'.",
+        `Outer ${MODEL} orchestration and synthesis effort applied to all queries: 'none', 'low', 'medium', 'high', 'xhigh', or 'max'. Server default: '${config.reasoningEffort}'. Inner web retrieval always uses 'none'.`,
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])

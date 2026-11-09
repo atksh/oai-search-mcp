@@ -1,47 +1,45 @@
-# GPT-5.6 Sol and Programmatic Tool Calling - Test Results
+# GPT-6.1 Terra and the `~/.zshrc` Key Launcher - Test Results
 
-**Date**: 2026-08-12
-**Version**: 2.0.0
+**Date**: 2026-11-09
+**Version**: Unreleased (after 2.0.0)
 **Status**: Passed
 
 ## Verified behavior
 
-- The runtime and nested search requests returned `gpt-5.6-sol` exclusively.
-- Programmatic Tool Calling produced `program`, `function_call`, `program_output`, and final `message` items.
-- The strict `search_web` function preserved program caller metadata and returned structured answers, URL citations, and consulted sources.
-- Search, opened-page, and in-page action URLs are retained in the structured consulted-source list.
-- Incomplete and failed inner Responses are returned to the PTC program as structured errors, including available failure details.
-- Search execution is bounded to five inner calls and eight outer PTC rounds.
-- Batch execution is bounded to three concurrent workflows while preserving input order.
-- Stored-response continuation returned a linked answer.
-- Standalone compaction output was replayed as input and the next turn completed successfully.
-- The published MCP tool inputs, session response envelope, and batch output shapes remain compatible with v1.x; `max` is newly accepted for outer reasoning effort.
+- The runtime and nested search requests returned `gpt-6.1-terra` exclusively, in the live smoke test and in two MCP searches through the launcher.
+- Programmatic Tool Calling on `gpt-6.1-terra` produced `program`, `function_call`, `program_output`, and final `message` items.
+- Stored-response continuation returned a linked answer, and standalone compaction output was replayed as input and the next turn completed.
+- With no `reasoningEffort` in the tool call and no `REASONING_EFFORT` set, the stored outer response recorded `reasoning.effort: "high"`.
+- The launcher read `OPENAI_API_KEY` from the real `~/.zshrc` (logged by SHA-256 fingerprint only) under the normal environment and a Dock-like minimal environment, in 30 concurrent starts, and with a stale `OPENAI_API_KEY` or a foreign `ZDOTDIR` inherited.
+- Fixture `~/.zshrc` files that echo, read stdin, close fds 3 to 9, alias `print`, hang, exit early, start background jobs, or set a multi-line key behave as documented. The probe shell never gets a controlling terminal, even under a pty.
+- A SIGTERM during the probe killed the probe shell in 40 of 40 runs at 8-way parallelism.
+- Unknown `REASONING_EFFORT`, `SEARCH_CONTEXT_SIZE`, `OUTPUT_VERBOSITY` and `LOG_LEVEL` values are ignored with a warning; differently cased valid values are accepted.
 
 ## Commands and results
 
 | Command | Result |
 | --- | --- |
-| `pnpm test` | Passed: 11 tests, 0 failures |
+| `pnpm test` | Passed: builds first, then 37 tests, 0 failures, 0 skipped |
+| `ZDOTDIR=<empty dir> node --test bin/zshrc-key.test.mjs` | Passed: 25 tests |
 | `pnpm build` | Passed: TypeScript compiled and runtime assets copied |
 | `make check` | Passed: build artifacts verified |
-| `pnpm test:live` | Passed: live GPT-5.6 Sol/PTC, citations, state, and compaction |
-| `pnpm audit --prod` | Passed: no known vulnerabilities |
-| Local MCP protocol smoke | Passed: tools and system-prompt resource discovered |
-| `npm pack --dry-run` | Passed: publishable package assembled |
-| Missing-key startup smoke | Passed: exited 1 with an actionable error |
+| `pnpm test:live` | Passed: live GPT-6.1 Terra/PTC, citations, state, and compaction |
+| MCP search through `bin/oai-search-mcp.mjs` | Passed twice: effort `medium` (explicit) and `high` (default) |
+| `npm pack --dry-run` | Passed: package includes `bin/oai-search-mcp.mjs` and `bin/zshrc-key.mjs`, not the test |
 | `git diff --check` | Passed |
 | Tracked-patch credential scan | Passed: no API-key-shaped value found |
+| `pnpm audit --prod` | Not clean: 33 advisories (1 critical, 11 high) in existing dependencies; this change does not touch dependencies |
 
 ## Live smoke evidence
 
-- Model: `gpt-5.6-sol`
-- PTC rounds: 5
-- Inner searches: 4
-- Outer tokens: 6,391
-- Inner tokens: 32,999
+- Model: `gpt-6.1-terra`
+- PTC rounds: 3
+- Inner searches: 2
+- Outer tokens: 4,937
+- Inner tokens: 26,097
 - Required response item types missing: none
 - Unexpected returned models: none
 - Initial and follow-up answers contained clickable links
 - Post-compaction continuation completed
 
-The live smoke intentionally uses the configured API key and incurs Responses API and web-search usage. It is excluded from the default deterministic test command.
+The live run preceded the change that makes the smoke test also require at least one inner search; it reported 2. The live smoke intentionally uses the configured API key and incurs Responses API and web-search usage. It is excluded from the default deterministic test command.
