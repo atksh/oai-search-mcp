@@ -1,4 +1,4 @@
-# GPT-6.1 Terra and the `~/.zshrc` Key Launcher - Test Results
+# GPT-6.1 Terra, the `~/.zshrc` Key Launcher and Key Rotation - Test Results
 
 **Date**: 2026-11-09
 **Version**: Unreleased (after 2.0.0)
@@ -14,22 +14,25 @@
 - Fixture `~/.zshrc` files that echo, read stdin, close fds 3 to 9, alias `print`, hang, exit early, start background jobs, or set a multi-line key behave as documented. The probe shell never gets a controlling terminal, even under a pty.
 - A SIGTERM during the probe killed the probe shell in 40 of 40 runs at 8-way parallelism, and the launcher logs the interruption before it dies.
 - Unknown `REASONING_EFFORT`, `SEARCH_CONTEXT_SIZE`, `OUTPUT_VERBOSITY` and `LOG_LEVEL` values are ignored with a warning; differently cased valid values are accepted.
+- After `~/.zshrc` changed under a running server, a 401 made it re-read the key once, switch to the new key and organization, and retry the request once; the next request used the new key directly. Without the launcher a 401 is returned once, with no retry (fake API, `bin/zshrc-key.test.mjs`).
+- `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID` and `OPENAI_BASE_URL` from `~/.zshrc` replace the client's values; the real `~/.zshrc` defines none of them.
+- With `@modelcontextprotocol/sdk` 1.32.2 and `zod` 4.6.7, the published tool schemas keep their enums, required fields and descriptions, and a live two-query batch through the launcher succeeded on `gpt-6.1-terra`.
 
 ## Commands and results
 
 | Command | Result |
 | --- | --- |
-| `pnpm test` | Passed: builds first, then 45 tests, 0 failures, 0 skipped |
-| `ZDOTDIR=<empty dir> node --test bin/zshrc-key.test.mjs` | Passed: 33 tests |
-| `node --test bin/zshrc-key.test.mjs`, 4 copies in parallel | 28 later runs passed, 8 of them under 8 busy `yes` processes; one earlier batch of 12 had failures whose test names were not captured |
+| `pnpm test` | Passed: builds first, then 53 tests, 0 failures, 0 skipped |
+| `ZDOTDIR=<empty dir> node --test bin/zshrc-key.test.mjs` | Passed: 41 tests |
+| `node --test bin/zshrc-key.test.mjs`, 4 copies in parallel | With the final suite, 16 of 16 runs passed, 4 of them under 8 busy `yes` processes. Before that, 28 runs passed and one batch of 12 had failures whose test names were not captured |
 | `pnpm build` | Passed: TypeScript compiled and runtime assets copied |
 | `make check` | Passed: build artifacts verified |
 | `pnpm test:live` | Passed: live GPT-6.1 Terra/PTC, citations, state, and compaction |
-| MCP search through `bin/oai-search-mcp.mjs` | Passed twice: effort `medium` (explicit) and `high` (default) |
-| `npm pack --dry-run` | Passed: package includes `bin/oai-search-mcp.mjs` and `bin/zshrc-key.mjs`, not the test |
+| MCP search through `bin/oai-search-mcp.mjs` | Passed: single searches at effort `medium` (explicit) and `high` (default), and a two-query batch after the dependency upgrade |
+| `npm pack --dry-run` | Passed: package includes `bin/oai-search-mcp.mjs`, `bin/launcher-config.mjs` and `bin/zshrc-key.mjs`, not the test |
 | `git diff --check` | Passed |
 | Tracked-patch credential scan | Passed: no API-key-shaped value found |
-| `pnpm audit --prod` | Not clean: 33 advisories (1 critical, 11 high) in existing dependencies; this change does not touch dependencies |
+| `pnpm audit --prod` | Passed: no known vulnerabilities (was 33 before the dependency upgrade) |
 
 ## Live smoke evidence
 

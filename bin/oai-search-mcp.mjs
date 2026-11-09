@@ -1,114 +1,123 @@
 #!/usr/bin/env node
 // Start oai-search-mcp with OPENAI_API_KEY taken from the current ~/.zshrc.
 // MCP clients run `node <this file>` and keep no key in their config, so a key
-// rotated in ~/.zshrc reaches every client on its next server start.
+// rotated in ~/.zshrc reaches every client on its next server start. A running
+// server re-reads ~/.zshrc through a hook when the API rejects its key (401).
 // The server runs in this process; the shell never touches MCP stdio.
 //
-// Each start appends one JSON line (key fingerprint only, never the key) to
-// launcher.log, so GUI clients that hide stderr can still be diagnosed.
+// stderr gets JSON lines in the server's log format. Each start (and each
+// re-read) also appends one JSON line, with a key fingerprint and never the
+// key, to launcher.log, so GUI clients that hide stderr can still be diagnosed.
 
-import { spawnSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, renameSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_TIMEOUT_MS, classify, fingerprint, readKeyFromZshrc, redact } from "./zshrc-key.mjs";
+import { LEVELS, logThreshold, parseTimeout, resolveLogPath } from "./launcher-config.mjs";
+import { DROPPED_VARS, classify, fingerprint, readKeyFromZshrc, redact } from "./zshrc-key.mjs";
 
-const PREFIX = "[oai-search-mcp launcher]";
-const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
-const levelName = (process.env.LOG_LEVEL ?? "info").trim().toLowerCase();
-const threshold = Object.hasOwn(LEVELS, levelName) ? LEVELS[levelName] : LEVELS.info;
-// The probe delays the MCP initialize reply; stay under client startup budgets (Codex about 30 s).
-const MAX_TIMEOUT_MS = 25_000;
 const MAX_LOG_BYTES = 1024 * 1024;
 const STDERR_IN_LOG = 300;
+// index.ts looks this up to re-read the key after the API answers 401.
+const REFRESH_HOOK = Symbol.for("oai-search-mcp.refreshApiKey");
+const threshold = logThreshold(process.env.LOG_LEVEL);
 
-function log(level, message) {
-  if (LEVELS[level] >= threshold) process.stderr.write(`${PREFIX} ${level}: ${message}\n`);
+/** One JSON line on stderr in the server's log format; errors ignore LOG_LEVEL. */
+function log(level, event, fields = {}) {
+  if (level !== "error" && LEVELS[level] < threshold) return;
+  process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields })}\n`);
+}
+const warn = (message) => log("warn", "launcher_warning", { message });
+
+const logFile = resolveLogPath({ env: process.env, platform: process.platform, home: os.homedir() }, warn);
+let parentName;
+
+function psParentArgs() {
+  return ["-o", "comm=", "-p", String(process.ppid)];
 }
 
-/** Errors are shown whatever LOG_LEVEL says. */
-function fail(message) {
-  process.stderr.write(`${PREFIX} error: ${message}\n`);
-}
-
-function timeoutFromEnv() {
-  const raw = process.env.OAI_SEARCH_ZSHRC_TIMEOUT_MS;
-  if (raw === undefined || raw === "") return DEFAULT_TIMEOUT_MS;
-  const value = Number(raw);
-  if (Number.isInteger(value) && value >= 100 && value <= MAX_TIMEOUT_MS) return value;
-  log("warn", `ignoring OAI_SEARCH_ZSHRC_TIMEOUT_MS=${JSON.stringify(raw)} (want an integer from 100 to ${MAX_TIMEOUT_MS}); using ${DEFAULT_TIMEOUT_MS}`);
-  return DEFAULT_TIMEOUT_MS;
-}
-
-function expandHome(value) {
-  return value === "~" || value.startsWith("~/") ? path.join(os.homedir(), value.slice(1)) : value;
-}
-
-function defaultLogPath() {
-  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Logs", "oai-search-mcp", "launcher.log");
-  const stateHome = process.env.XDG_STATE_HOME;
-  const base = stateHome && path.isAbsolute(stateHome) ? stateHome : path.join(os.homedir(), ".local", "state");
-  return path.join(base, "oai-search-mcp", "launcher.log");
-}
-
-function logFilePath() {
-  const configured = process.env.OAI_SEARCH_LAUNCHER_LOG;
-  if (configured === "off") return null;
-  if (!configured) return defaultLogPath();
-  const expanded = expandHome(configured);
-  if (path.isAbsolute(expanded)) return expanded;
-  log("warn", `ignoring OAI_SEARCH_LAUNCHER_LOG=${JSON.stringify(configured)} (want an absolute path or "off")`);
-  return defaultLogPath();
-}
-
-function parentCommand() {
-  const ps = spawnSync("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1000 });
-  return ps.status === 0 ? path.basename(ps.stdout.trim()) : undefined;
-}
-
-/** Append one record to launcher.log; logging must never stop the server from starting. */
-function record(entry) {
-  const file = logFilePath();
-  if (!file) return;
+function parentCommandSync() {
   try {
-    mkdirSync(path.dirname(file), { recursive: true });
+    return path.basename(execFileSync("ps", psParentArgs(), { encoding: "utf8", timeout: 1000 }).trim()) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function appendRecord(line) {
+  if (!logFile) return;
+  try {
+    mkdirSync(path.dirname(logFile), { recursive: true });
     let stat;
     try {
-      stat = lstatSync(file);
+      stat = lstatSync(logFile);
     } catch {
       // No log yet.
     }
     // A FIFO would block, and a device such as /dev/stdout would corrupt MCP stdio.
     if (stat && !stat.isFile()) {
-      log("warn", `not logging to ${file}: it is not a regular file`);
+      warn(`not logging to ${logFile}: it is not a regular file`);
       return;
     }
-    if (stat && stat.size > MAX_LOG_BYTES) renameSync(file, `${file}.1`);
-    const line = { time: new Date().toISOString(), pid: process.pid, ppid: process.ppid, parent: parentCommand(), ...entry };
-    appendFileSync(file, `${JSON.stringify(line)}\n`, { mode: 0o600 });
+    if (stat && stat.size > MAX_LOG_BYTES) renameSync(logFile, `${logFile}.1`);
+    appendFileSync(logFile, `${JSON.stringify(line)}\n`, { mode: 0o600 });
   } catch (error) {
-    log("warn", `could not write ${file}: ${error.message}`);
+    warn(`could not write ${logFile}: ${error.message}`);
   }
 }
 
-const timeoutMs = timeoutFromEnv();
+function recordLine(entry) {
+  return { time: new Date().toISOString(), pid: process.pid, ppid: process.ppid, parent: parentName, ...entry };
+}
+
+/** Write a record now; for paths that exit right after. */
+function recordNow(entry) {
+  parentName ??= parentCommandSync();
+  appendRecord(recordLine(entry));
+}
+
+/** Write a record without blocking the server on the `ps` lookup. */
+function recordLater(entry) {
+  const line = recordLine(entry);
+  if (parentName !== undefined || !logFile) {
+    appendRecord(line);
+    return;
+  }
+  execFile("ps", psParentArgs(), { encoding: "utf8", timeout: 1000 }, (error, stdout) => {
+    parentName = error ? undefined : path.basename(stdout.trim()) || undefined;
+    appendRecord({ ...line, parent: parentName });
+  });
+}
+
+const timeoutMs = parseTimeout(process.env.OAI_SEARCH_ZSHRC_TIMEOUT_MS, warn);
+const dropped = DROPPED_VARS.filter((name) => process.env[name] !== undefined);
 const result = await readKeyFromZshrc({
   timeoutMs,
   onSignal: (signal) => {
-    fail(`interrupted by ${signal} while reading ~/.zshrc`);
-    record({ source: "none", reason: `interrupted by ${signal} while reading ~/.zshrc` });
+    const message = `interrupted by ${signal} while reading ~/.zshrc`;
+    log("error", "launcher_error", { message });
+    recordNow({ source: "none", reason: message });
   },
 });
-log("debug", `zsh pid ${result.pid}, ${result.ms} ms, ${result.stderrBytes} bytes on stderr, timeout ${timeoutMs} ms`);
+log("debug", "launcher_probe", {
+  zshPid: result.pid,
+  ms: result.ms,
+  stderrBytes: result.stderrBytes,
+  timeoutMs,
+  ignoredFromClientEnv: dropped,
+});
 
 let entry;
 if (result.ok) {
   process.env.OPENAI_API_KEY = result.key;
-  if (result.warning) log("warn", result.warning);
-  log("info", `OPENAI_API_KEY loaded from ~/.zshrc (sha256:${fingerprint(result.key)}, ${result.ms} ms)`);
-  entry = { source: "zshrc", sha256: fingerprint(result.key), ms: result.ms, warning: result.warning };
+  Object.assign(process.env, result.settings);
+  for (const message of [result.warning, ...result.warnings].filter(Boolean)) warn(message);
+  const settings = Object.keys(result.settings);
+  const sha256 = fingerprint(result.key);
+  log("info", "launcher_key_loaded", { source: "zshrc", sha256, ms: result.ms, settings });
+  entry = { source: "zshrc", sha256, ms: result.ms, settings: settings.length ? settings : undefined, warning: result.warning };
 } else {
   const shellStderr = result.stderr?.trim() ? result.stderr.trim().slice(-STDERR_IN_LOG) : undefined;
   const why = `could not read OPENAI_API_KEY from ~/.zshrc (${result.reason}${shellStderr ? `; zsh stderr: ${shellStderr}` : ""})`;
@@ -116,23 +125,44 @@ if (result.ok) {
   const inherited = inheritedRaw ? classify(inheritedRaw, "the inherited environment") : undefined;
   if (inherited?.ok) {
     process.env.OPENAI_API_KEY = inherited.key;
-    fail(`${why}; falling back to the inherited value (sha256:${fingerprint(inherited.key)}), which may be stale`);
-    entry = { source: "inherited", sha256: fingerprint(inherited.key), ms: result.ms, reason: result.reason, stderr: shellStderr };
+    const sha256 = fingerprint(inherited.key);
+    log("error", "launcher_key_fallback", {
+      message: `${why}; falling back to the inherited value, which may be stale`,
+      source: "inherited",
+      sha256,
+    });
+    entry = { source: "inherited", sha256, ms: result.ms, reason: result.reason, stderr: shellStderr };
   } else {
     const inheritedProblem = inherited ? `; ${inherited.reason}` : " and none was inherited";
-    fail(`${why}${inheritedProblem}`);
-    record({ source: "none", ms: result.ms, reason: `${result.reason}${inheritedProblem}`, stderr: shellStderr });
+    log("error", "launcher_error", { message: `${why}${inheritedProblem}` });
+    recordNow({ source: "none", ms: result.ms, reason: `${result.reason}${inheritedProblem}`, stderr: shellStderr });
     process.exit(1);
   }
 }
+
+// Re-read ~/.zshrc when the server's key is rejected; resolves to null when it cannot.
+globalThis[REFRESH_HOOK] = async () => {
+  const fresh = await readKeyFromZshrc({ timeoutMs });
+  if (!fresh.ok) {
+    log("error", "launcher_key_refresh_failed", { reason: fresh.reason });
+    recordLater({ event: "refresh", source: "none", ms: fresh.ms, reason: fresh.reason });
+    return null;
+  }
+  process.env.OPENAI_API_KEY = fresh.key;
+  Object.assign(process.env, fresh.settings);
+  const sha256 = fingerprint(fresh.key);
+  log("info", "launcher_key_refreshed", { source: "zshrc", sha256, ms: fresh.ms });
+  recordLater({ event: "refresh", source: "zshrc", sha256, ms: fresh.ms });
+  return { key: fresh.key, settings: fresh.settings };
+};
 
 try {
   await import("../build/index.js");
 } catch (error) {
   const message = redact(error?.message ?? String(error));
   const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-  fail(`could not load the server (${message}); run \`pnpm build\` in ${repo}`);
-  record({ ...entry, serverError: message });
+  log("error", "launcher_error", { message: `could not load the server (${message}); run \`pnpm build\` in ${repo}` });
+  recordNow({ ...entry, serverError: message });
   process.exit(1);
 }
-record(entry);
+recordLater(entry);

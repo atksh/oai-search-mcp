@@ -10,6 +10,7 @@
   "files": [
     "build/",
     "bin/oai-search-mcp.mjs",
+    "bin/launcher-config.mjs",
     "bin/zshrc-key.mjs"
   ],
   "repository": {
@@ -42,10 +43,10 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "nanoid": "^5.1.16",
     "openai": "^7.4.0",
-    "zod": "^3.25.67"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

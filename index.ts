@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import OpenAI from "openai";
 import type { ResponseInput } from "openai/resources/responses/responses";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,7 @@ import {
   MODEL,
   type OutputVerbosity,
   type ReasoningEffort,
+  type ResponsesClientLike,
   type SearchContextSize,
 } from "./ptc-search.js";
 
@@ -262,7 +264,8 @@ function readDefaultSystemPrompt(): string | undefined {
   for (const candidate of defaultPromptCandidates) {
     try {
       if (fs.existsSync(candidate)) {
-        const content = fs.readFileSync(candidate, "utf8");
+        // The file names the model as {{MODEL}} so a model change needs no prompt edit.
+        const content = fs.readFileSync(candidate, "utf8").replaceAll("{{MODEL}}", MODEL);
         if (content && content.trim().length > 0) return content;
       }
     } catch {
@@ -283,6 +286,75 @@ const openai = new OpenAI({
   maxRetries: config.maxRetries,
   timeout: config.timeout,
 });
+
+// =============================================================================
+// API key rotation
+// =============================================================================
+
+// bin/oai-search-mcp.mjs registers this hook to re-read the key (and its
+// organization, project and base URL) from ~/.zshrc. Without the launcher it
+// is absent and a 401 is returned as before.
+type KeyRefresh = (() => Promise<{ key: string; settings: Record<string, string> } | null>) | undefined;
+const refreshHook = (globalThis as Record<symbol, unknown>)[
+  Symbol.for("oai-search-mcp.refreshApiKey")
+] as KeyRefresh;
+const KEY_REFRESH_MIN_INTERVAL_MS = 30_000;
+let keyRefresh: Promise<void> | null = null;
+let lastKeyRefreshAt = 0;
+
+function keyFingerprint(key: string | null): string | undefined {
+  return key ? createHash("sha256").update(key).digest("hex").slice(0, 8) : undefined;
+}
+
+/** Re-read the key once for all concurrent 401s, at most every 30 s. */
+async function refreshApiKeyAfter401(): Promise<void> {
+  if (!refreshHook) return;
+  if (!keyRefresh) {
+    if (Date.now() - lastKeyRefreshAt < KEY_REFRESH_MIN_INTERVAL_MS) return;
+    lastKeyRefreshAt = Date.now();
+    keyRefresh = (async () => {
+      try {
+        const fresh = await refreshHook();
+        if (!fresh || fresh.key === openai.apiKey) return;
+        const previous = keyFingerprint(openai.apiKey);
+        openai.apiKey = fresh.key;
+        const { OPENAI_ORG_ID, OPENAI_PROJECT_ID, OPENAI_BASE_URL } = fresh.settings;
+        if (OPENAI_ORG_ID) openai.organization = OPENAI_ORG_ID;
+        if (OPENAI_PROJECT_ID) openai.project = OPENAI_PROJECT_ID;
+        if (OPENAI_BASE_URL) openai.baseURL = OPENAI_BASE_URL;
+        logger.info("api_key_rotated", { from: previous, to: keyFingerprint(fresh.key) });
+      } catch (error) {
+        logger.error("api_key_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        keyRefresh = null;
+      }
+    })();
+  }
+  await keyRefresh;
+}
+
+/** Run one API request; after a 401, retry it once if the key changed meanwhile. */
+async function withKeyRotation<T>(request: () => Promise<T>): Promise<T> {
+  const keyAtStart = openai.apiKey;
+  try {
+    return await request();
+  } catch (error) {
+    if ((error as { status?: unknown } | null)?.status !== 401) throw error;
+    if (openai.apiKey === keyAtStart) await refreshApiKeyAfter401();
+    if (openai.apiKey === keyAtStart) throw error;
+    return request();
+  }
+}
+
+// Every request of the PTC loop survives a key rotation on its own, so no
+// completed round is repeated.
+const rotatingClient: ResponsesClientLike = {
+  responses: {
+    create: (body) => withKeyRotation(() => openai.responses.create(body)),
+  },
+};
 
 // =============================================================================
 // Compaction
@@ -311,10 +383,12 @@ async function compactConversation(
         totalTokens: session.totalTokens,
       });
 
-      const compacted = await openai.responses.compact({
-        model: config.model,
-        previous_response_id: session.lastResponseId,
-      });
+      const compacted = await withKeyRotation(() =>
+        openai.responses.compact({
+          model: config.model,
+          previous_response_id: session.lastResponseId,
+        }),
+      );
 
       logger.info("compaction_success", {
         sessionId: session.id,
@@ -389,7 +463,7 @@ async function executeSingleSearch(
       hasCompactedInput: !!options?.compactedInput,
     });
 
-    const response = await executePtcSearch(openai, input, {
+    const response = await executePtcSearch(rotatingClient, input, {
       instructions,
       previousResponseId: options?.previousResponseId,
       compactedInput: options?.compactedInput,
@@ -432,7 +506,7 @@ async function executeSingleSearch(
     // Provide more helpful error messages for common issues
     let errorText: string;
     if (errorMessage.includes("api_key")) {
-      errorText = `Error: Invalid API key. Please check your OPENAI_API_KEY environment variable.`;
+      errorText = `Error: Invalid API key. Check OPENAI_API_KEY (in ~/.zshrc when the server runs through bin/oai-search-mcp.mjs).`;
     } else if (errorMessage.includes("rate_limit")) {
       errorText = `Error: Rate limit exceeded. Please try again later.`;
     } else if (errorMessage.includes("timeout")) {

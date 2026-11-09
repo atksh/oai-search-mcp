@@ -5,18 +5,21 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { classify, fingerprint, readKeyFromZshrc, redact, shellEnv } from "./zshrc-key.mjs";
+import { LEVELS, MAX_TIMEOUT_MS, logThreshold, parseTimeout, resolveLogPath } from "./launcher-config.mjs";
+import { DEFAULT_TIMEOUT_MS, classify, fingerprint, readKeyFromZshrc, redact, shellEnv } from "./zshrc-key.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const launcher = path.join(here, "oai-search-mcp.mjs");
 const moduleUrl = new URL("./zshrc-key.mjs", import.meta.url).href;
 const builtServer = path.join(here, "..", "build", "index.js");
 const hasZsh = existsSync("/bin/zsh");
+// A ~/.zshrc that records its shell pid and then hangs.
+const HANGING_RC = "print $$ > $HOME/zsh.pid\nsleep 30\n";
 const homes = [];
 
 function fakeHome(zshrc) {
@@ -77,13 +80,15 @@ after(() => {
 describe("shellEnv", () => {
   test("passes the client environment through except OPENAI_API_KEY and ZDOTDIR", () => {
     const env = shellEnv(
-      { HOME: "/h", PATH: "/p", USER: "u", TMUX: "t", SSH_AUTH_SOCK: "s", OPENAI_API_KEY: "sk-x", ZDOTDIR: "/z" },
+      { HOME: "/h", PATH: "/p", USER: "u", TMUX: "t", SSH_AUTH_SOCK: "s", OPENAI_API_KEY: "sk-x", OPENAI_ORG_ID: "o", OPENAI_BASE_URL: "b", ZDOTDIR: "/z" },
       "/bin/zsh",
     );
     assert.equal(env.TMUX, "t");
     assert.equal(env.SSH_AUTH_SOCK, "s");
     assert.equal(env.OPENAI_API_KEY, undefined);
     assert.equal(env.ZDOTDIR, undefined);
+    assert.equal(env.OPENAI_ORG_ID, undefined);
+    assert.equal(env.OPENAI_BASE_URL, undefined);
     assert.equal(env.SHELL, "/bin/zsh");
   });
 
@@ -176,6 +181,26 @@ describe("readKeyFromZshrc", { skip: !hasZsh && "zsh is not installed" }, () => 
     assert.equal(result.key, "sk-test-home");
   });
 
+  test("reads OPENAI_ORG_ID, OPENAI_PROJECT_ID and OPENAI_BASE_URL with the key, ignoring the client's", async () => {
+    const home = fakeHome(
+      "export OPENAI_API_KEY=sk-test-c\nexport OPENAI_ORG_ID=org-z\nexport OPENAI_BASE_URL=https://proxy.example/v1\n",
+    );
+    const result = await readKeyFromZshrc({
+      env: envFor(home, { OPENAI_ORG_ID: "org-stale", OPENAI_PROJECT_ID: "proj_stale" }),
+    });
+    assert.equal(result.key, "sk-test-c");
+    assert.deepEqual(result.settings, { OPENAI_ORG_ID: "org-z", OPENAI_BASE_URL: "https://proxy.example/v1" });
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test("drops an unusable OpenAI setting from ~/.zshrc with a warning", async () => {
+    const home = fakeHome("export OPENAI_API_KEY=sk-test-c\nexport OPENAI_BASE_URL=proxy.example\nexport OPENAI_PROJECT_ID='proj a'\n");
+    const result = await readKeyFromZshrc({ env: envFor(home) });
+    assert.equal(result.key, "sk-test-c");
+    assert.deepEqual(result.settings, {});
+    assert.equal(result.warnings.length, 2);
+  });
+
   test("passes client variables such as TMUX through to ~/.zshrc", async () => {
     const home = fakeHome('[[ -z $TMUX ]] && exit 9\nexport OPENAI_API_KEY=sk-test-tmux\n');
     const result = await readKeyFromZshrc({ env: envFor(home, { TMUX: "/tmp/tmux-1/default,1,0" }) });
@@ -219,7 +244,7 @@ describe("readKeyFromZshrc", { skip: !hasZsh && "zsh is not installed" }, () => 
   });
 
   test("kills the shell and still dies by the signal when SIGTERM arrives during the probe", async () => {
-    const home = fakeHome("print $$ > $HOME/zsh.pid\nsleep 30\n");
+    const home = fakeHome(HANGING_RC);
     const code = `import {readKeyFromZshrc} from ${JSON.stringify(moduleUrl)}; await readKeyFromZshrc({timeoutMs: 60000});`;
     const wrapper = spawn(process.execPath, ["--input-type=module", "-e", code], {
       env: isolatedEnv(home),
@@ -233,7 +258,7 @@ describe("readKeyFromZshrc", { skip: !hasZsh && "zsh is not installed" }, () => 
   });
 
   test("does not re-raise a signal that the host process handles itself", async () => {
-    const home = fakeHome("print $$ > $HOME/zsh.pid\nsleep 30\n");
+    const home = fakeHome(HANGING_RC);
     const code = [
       `import {readKeyFromZshrc} from ${JSON.stringify(moduleUrl)};`,
       "let calls = 0;",
@@ -296,6 +321,42 @@ describe("readKeyFromZshrc", { skip: !hasZsh && "zsh is not installed" }, () => 
   );
 });
 
+describe("launcher configuration", () => {
+  test("logThreshold maps names case-insensitively and treats unknown names as info", () => {
+    assert.equal(logThreshold("WARN"), LEVELS.warn);
+    assert.equal(logThreshold(undefined), LEVELS.info);
+    for (const odd of ["constructor", "toString", "__proto__", "verbose"]) assert.equal(logThreshold(odd), LEVELS.info, odd);
+  });
+
+  test("parseTimeout accepts 100 to 25000 ms and warns about anything else", () => {
+    const warnings = [];
+    const warn = (message) => warnings.push(message);
+    assert.equal(parseTimeout(undefined, warn), DEFAULT_TIMEOUT_MS);
+    assert.equal(parseTimeout("", warn), DEFAULT_TIMEOUT_MS);
+    assert.equal(parseTimeout("2500", warn), 2500);
+    assert.equal(parseTimeout(String(MAX_TIMEOUT_MS), warn), MAX_TIMEOUT_MS);
+    assert.equal(warnings.length, 0);
+    for (const bad of ["-5", "99", "30000", "1.5", "abc"]) assert.equal(parseTimeout(bad, warn), DEFAULT_TIMEOUT_MS, bad);
+    assert.equal(warnings.length, 5);
+  });
+
+  test("resolveLogPath expands ~, refuses relative paths and follows XDG_STATE_HOME only when absolute", () => {
+    const warnings = [];
+    const warn = (message) => warnings.push(message);
+    const home = "/home/me";
+    const at = (env, platform = "linux") => resolveLogPath({ env, platform, home }, warn);
+    assert.equal(at({ OAI_SEARCH_LAUNCHER_LOG: "off" }), null);
+    assert.equal(at({ OAI_SEARCH_LAUNCHER_LOG: "~/logs/l.log" }), "/home/me/logs/l.log");
+    assert.equal(at({ OAI_SEARCH_LAUNCHER_LOG: "/var/l.log" }), "/var/l.log");
+    assert.equal(at({}, "darwin"), "/home/me/Library/Logs/oai-search-mcp/launcher.log");
+    assert.equal(at({ XDG_STATE_HOME: "/state" }), "/state/oai-search-mcp/launcher.log");
+    assert.equal(at({ XDG_STATE_HOME: "relative" }), "/home/me/.local/state/oai-search-mcp/launcher.log");
+    assert.equal(warnings.length, 0);
+    assert.equal(at({ OAI_SEARCH_LAUNCHER_LOG: "logs/l.log" }), "/home/me/.local/state/oai-search-mcp/launcher.log");
+    assert.equal(warnings.length, 1);
+  });
+});
+
 describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
   before(() => assert.ok(existsSync(builtServer), "build/index.js is missing: run `pnpm build` (pnpm test does)"));
 
@@ -303,14 +364,39 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
     return envFor(home, { LOG_LEVEL: "info", OAI_SEARCH_LAUNCHER_LOG: path.join(home, "launcher.log"), ...extra });
   }
 
-  function records(home) {
-    return readFileSync(path.join(home, "launcher.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  /** launcher.log records; success records are written asynchronously, so wait for them. */
+  async function records(home, count = 1) {
+    const file = path.join(home, "launcher.log");
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const lines = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+      if (lines.length >= count) return lines.map((line) => JSON.parse(line));
+      if (Date.now() > deadline) throw new Error(`launcher.log has ${lines.length} of ${count} records`);
+      await sleep(25);
+    }
   }
 
-  async function connect(home, extraEnv) {
+  /** JSON log lines (launcher and server) on stderr. */
+  function events(stderr) {
+    return stderr
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+
+  const event = (stderr, name) => events(stderr).find((entry) => entry.event === name);
+
+  async function connect(home, extraEnv = {}, args = [launcher]) {
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [launcher],
+      args,
       env: launcherEnv(home, extraEnv),
       stderr: "pipe",
     });
@@ -323,29 +409,45 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
     return { client, stderr: () => stderr };
   }
 
-  test("the server sends the ~/.zshrc key to the API despite a noisy ~/.zshrc and a stale inherited key", async () => {
+  /** A fake Responses API that answers every request with 401 and records its headers. */
+  async function fakeApi() {
     const seen = [];
-    const api = http.createServer((req, res) => {
-      seen.push(req.headers.authorization);
+    const server = http.createServer((req, res) => {
+      seen.push({
+        authorization: req.headers.authorization,
+        organization: req.headers["openai-organization"],
+        project: req.headers["openai-project"],
+      });
       req.resume();
       res.writeHead(401, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "test", type: "invalid_request_error", code: "invalid_api_key" } }));
     });
-    await new Promise((r) => api.listen(0, "127.0.0.1", r));
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    return { seen, url: `http://127.0.0.1:${server.address().port}/v1`, close: () => server.close() };
+  }
+
+  const search = (client) => client.callTool({ name: "web-search", arguments: { input: "ping" } });
+
+  test("the server sends the ~/.zshrc key to the API despite a noisy ~/.zshrc and a stale inherited key", async () => {
+    const api = await fakeApi();
     const home = fakeHome(["echo NOISE", "read -t 1 line", "export OPENAI_API_KEY=sk-test-e2e"].join("\n"));
     const { client, stderr } = await connect(home, {
       OPENAI_API_KEY: "sk-test-stale",
-      OPENAI_BASE_URL: `http://127.0.0.1:${api.address().port}/v1`,
+      OPENAI_BASE_URL: api.url,
       OPENAI_MAX_RETRIES: "0",
     });
     try {
       const { tools } = await client.listTools();
-      assert.ok(tools.some((tool) => tool.name === "web-search"));
-      await client.callTool({ name: "web-search", arguments: { input: "ping" } });
-      assert.ok(seen.length > 0, "the server never called the API");
-      assert.ok(seen.every((auth) => auth === "Bearer sk-test-e2e"), `saw ${seen.map((a) => a?.slice(0, 16))}`);
-      assert.match(stderr(), new RegExp(`loaded from ~/.zshrc \\(sha256:${fingerprint("sk-test-e2e")}`));
-      const [entry] = records(home);
+      const webSearch = tools.find((tool) => tool.name === "web-search");
+      assert.ok(webSearch, "web-search is not listed");
+      const effort = webSearch.inputSchema.properties.reasoningEffort;
+      assert.deepEqual(effort.enum, ["none", "low", "medium", "high", "xhigh", "max"]);
+      assert.match(effort.description, /Server default: 'high'/);
+      await search(client);
+      assert.ok(api.seen.length > 0, "the server never called the API");
+      assert.ok(api.seen.every((h) => h.authorization === "Bearer sk-test-e2e"), `saw ${api.seen.map((h) => h.authorization?.slice(0, 16))}`);
+      assert.equal(event(stderr(), "launcher_key_loaded")?.sha256, fingerprint("sk-test-e2e"));
+      const [entry] = await records(home);
       assert.equal(entry.source, "zshrc");
       assert.equal(entry.sha256, fingerprint("sk-test-e2e"));
       assert.ok(!readFileSync(path.join(home, "launcher.log"), "utf8").includes("sk-test"), "the log holds a key");
@@ -355,19 +457,96 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
     }
   });
 
-  test("falls back to the inherited key loudly, even at LOG_LEVEL=error", async () => {
-    const home = fakeHome("# no key\n");
-    const { client, stderr } = await connect(home, { OPENAI_API_KEY: "sk-test-inherited", LOG_LEVEL: "error" });
+  test("re-reads ~/.zshrc after a 401 and retries that request once with the rotated key", async () => {
+    const api = await fakeApi();
+    const home = fakeHome("export OPENAI_API_KEY=sk-test-old\n");
+    const { client, stderr } = await connect(home, { OPENAI_BASE_URL: api.url, OPENAI_MAX_RETRIES: "0" });
     try {
-      await client.listTools();
-      assert.match(stderr(), new RegExp(`error: .*falling back .*sha256:${fingerprint("sk-test-inherited")}.*may be stale`));
-      assert.equal(records(home)[0].source, "inherited");
+      writeFileSync(path.join(home, ".zshrc"), "export OPENAI_API_KEY=sk-test-new\nexport OPENAI_ORG_ID=org-test-new\n");
+      await search(client);
+      assert.deepEqual(api.seen.map((h) => h.authorization), ["Bearer sk-test-old", "Bearer sk-test-new"]);
+      assert.equal(api.seen[1].organization, "org-test-new");
+      const rotated = event(stderr(), "api_key_rotated");
+      assert.deepEqual([rotated?.from, rotated?.to], [fingerprint("sk-test-old"), fingerprint("sk-test-new")]);
+      const refresh = (await records(home, 2)).find((entry) => entry.event === "refresh");
+      assert.equal(refresh?.sha256, fingerprint("sk-test-new"));
+
+      // The rotated key is used directly from now on, and a 401 on it is not retried.
+      api.seen.length = 0;
+      await search(client);
+      assert.deepEqual(api.seen.map((h) => h.authorization), ["Bearer sk-test-new"]);
+    } finally {
+      await client.close();
+      api.close();
+    }
+  });
+
+  test("without the launcher a 401 is returned as before, with no retry", async () => {
+    const api = await fakeApi();
+    const { client } = await connect(
+      fakeHome(""),
+      { OPENAI_API_KEY: "sk-test-direct", OPENAI_BASE_URL: api.url, OPENAI_MAX_RETRIES: "0" },
+      [builtServer],
+    );
+    try {
+      await search(client);
+      assert.deepEqual(api.seen.map((h) => h.authorization), ["Bearer sk-test-direct"]);
+    } finally {
+      await client.close();
+      api.close();
+    }
+  });
+
+  test("takes OPENAI_ORG_ID, OPENAI_PROJECT_ID and OPENAI_BASE_URL from ~/.zshrc over the client's", async () => {
+    const api = await fakeApi();
+    const home = fakeHome(
+      `export OPENAI_API_KEY=sk-test-org\nexport OPENAI_ORG_ID=org-zshrc\nexport OPENAI_PROJECT_ID=proj_zshrc\nexport OPENAI_BASE_URL=${api.url}\n`,
+    );
+    const { client, stderr } = await connect(home, {
+      OPENAI_ORG_ID: "org-stale",
+      OPENAI_BASE_URL: "http://127.0.0.1:9/v1",
+      OPENAI_MAX_RETRIES: "0",
+    });
+    try {
+      await search(client);
+      assert.equal(api.seen[0]?.organization, "org-zshrc");
+      assert.equal(api.seen[0]?.project, "proj_zshrc");
+      assert.deepEqual(event(stderr(), "launcher_key_loaded")?.settings, ["OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_BASE_URL"]);
+    } finally {
+      await client.close();
+      api.close();
+    }
+  });
+
+  test("serves the system prompt with the model name filled in", async () => {
+    const { MODEL } = await import(pathToFileURL(path.join(here, "..", "build", "ptc-search.js")).href);
+    const { client } = await connect(fakeHome("export OPENAI_API_KEY=sk-test-prompt\n"));
+    try {
+      const { contents } = await client.readResource({ uri: "web-search://system-prompt" });
+      const text = contents.map((item) => item.text ?? "").join("\n");
+      assert.ok(text.includes(`powered by ${MODEL}`), "the prompt does not name the model");
+      assert.ok(!text.includes("{{MODEL}}"), "the prompt still has the placeholder");
     } finally {
       await client.close();
     }
   });
 
-  test("exits with an error and a log record when no key is available", () => {
+  test("falls back to the inherited key loudly, even at LOG_LEVEL=error", async () => {
+    const home = fakeHome("# no key\n");
+    const { client, stderr } = await connect(home, { OPENAI_API_KEY: "sk-test-inherited", LOG_LEVEL: "error" });
+    try {
+      await client.listTools();
+      const fallback = event(stderr(), "launcher_key_fallback");
+      assert.equal(fallback?.level, "error");
+      assert.equal(fallback?.sha256, fingerprint("sk-test-inherited"));
+      assert.match(fallback?.message ?? "", /may be stale/);
+      assert.equal((await records(home))[0].source, "inherited");
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("exits with an error and a log record when no key is available", async () => {
     const home = fakeHome("# no key\n");
     const run = spawnSync(process.execPath, [launcher], {
       env: launcherEnv(home, { LOG_LEVEL: "error" }),
@@ -376,28 +555,14 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
       timeout: 30_000,
     });
     assert.equal(run.status, 1);
-    assert.match(run.stderr, /error: could not read OPENAI_API_KEY from ~\/.zshrc .*none was inherited/);
-    const [entry] = records(home);
+    assert.match(event(run.stderr, "launcher_error")?.message ?? "", /could not read OPENAI_API_KEY from ~\/.zshrc .*none was inherited/);
+    const [entry] = await records(home);
     assert.equal(entry.source, "none");
     assert.match(entry.reason, /not set/);
   });
 
-  test("ignores an invalid OAI_SEARCH_ZSHRC_TIMEOUT_MS", async () => {
-    for (const bad of ["-5", "30000", "abc"]) {
-      const home = fakeHome("export OPENAI_API_KEY=sk-test-timeout\n");
-      const { client, stderr } = await connect(home, { OAI_SEARCH_ZSHRC_TIMEOUT_MS: bad });
-      try {
-        await client.listTools();
-        assert.match(stderr(), /warn: ignoring OAI_SEARCH_ZSHRC_TIMEOUT_MS/);
-        assert.equal(records(home)[0].source, "zshrc", `with ${bad}`);
-      } finally {
-        await client.close();
-      }
-    }
-  });
-
   test("logs an interruption by SIGTERM during the probe", { timeout: 20_000 }, async () => {
-    const home = fakeHome("print $$ > $HOME/zsh.pid\nsleep 30\n");
+    const home = fakeHome(HANGING_RC);
     const child = spawn(process.execPath, [launcher], { env: launcherEnv(home), stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => (stderr += chunk));
@@ -405,42 +570,39 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
     child.kill("SIGTERM");
     const [, signal] = await new Promise((r) => child.on("exit", (c, s) => r([c, s])));
     assert.equal(signal, "SIGTERM");
-    assert.match(stderr, /error: interrupted by SIGTERM while reading ~\/.zshrc/);
-    const [entry] = records(home);
+    assert.match(event(stderr, "launcher_error")?.message ?? "", /interrupted by SIGTERM while reading ~\/.zshrc/);
+    const [entry] = await records(home);
     assert.equal(entry.source, "none");
     assert.match(entry.reason, /interrupted by SIGTERM/);
     assert.ok(await waitDead(zshPid), "the probe zsh outlived the launcher");
   });
 
   test("keeps logging at info when LOG_LEVEL names an Object.prototype member", async () => {
-    const home = fakeHome("export OPENAI_API_KEY=sk-test-proto\n");
-    const { client, stderr } = await connect(home, { LOG_LEVEL: "constructor" });
+    const { client, stderr } = await connect(fakeHome("export OPENAI_API_KEY=sk-test-proto\n"), { LOG_LEVEL: "constructor" });
     try {
       await client.listTools();
-      assert.match(stderr(), /info: OPENAI_API_KEY loaded from ~\/.zshrc/);
+      assert.ok(event(stderr(), "launcher_key_loaded"), "no launcher_key_loaded line");
     } finally {
       await client.close();
     }
   });
 
-  test("expands ~ in OAI_SEARCH_LAUNCHER_LOG and refuses a FIFO without blocking", { timeout: 20_000 }, async () => {
+  test("refuses a FIFO as launcher.log without blocking", { timeout: 20_000 }, async () => {
     const home = fakeHome("export OPENAI_API_KEY=sk-test-logpath\n");
-    const tilde = await connect(home, { OAI_SEARCH_LAUNCHER_LOG: "~/logs/launcher.log" });
-    await tilde.client.close();
-    assert.equal(JSON.parse(readFileSync(path.join(home, "logs", "launcher.log"), "utf8").trim()).source, "zshrc");
-
     const fifo = path.join(home, "fifo.log");
     assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
     const { client, stderr } = await connect(home, { OAI_SEARCH_LAUNCHER_LOG: fifo });
     try {
       await client.listTools();
-      assert.match(stderr(), /not logging to .*fifo\.log: it is not a regular file/);
+      const deadline = Date.now() + 5000;
+      while (!/not a regular file/.test(stderr()) && Date.now() < deadline) await sleep(25);
+      assert.match(event(stderr(), "launcher_warning")?.message ?? "", /not logging to .*fifo\.log: it is not a regular file/);
     } finally {
       await client.close();
     }
   });
 
-  test("refuses a malformed inherited key instead of falling back to it", () => {
+  test("refuses a malformed inherited key instead of falling back to it", async () => {
     const home = fakeHome("# no key\n");
     const run = spawnSync(process.execPath, [launcher], {
       env: launcherEnv(home, { OPENAI_API_KEY: "sk-test a" }),
@@ -450,14 +612,16 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
     });
     assert.equal(run.status, 1);
     assert.match(run.stderr, /inherited environment contains whitespace/);
-    assert.equal(records(home)[0].source, "none");
+    assert.equal((await records(home))[0].source, "none");
   });
 
-  test("reports a missing server build clearly and logs it", () => {
+  test("reports a missing server build clearly and logs it", async () => {
     const home = fakeHome("export OPENAI_API_KEY=sk-test-nobuild\n");
     const copy = path.join(home, "pkg", "bin");
     mkdirSync(copy, { recursive: true });
-    for (const file of ["oai-search-mcp.mjs", "zshrc-key.mjs"]) copyFileSync(path.join(here, file), path.join(copy, file));
+    for (const file of ["oai-search-mcp.mjs", "zshrc-key.mjs", "launcher-config.mjs"]) {
+      copyFileSync(path.join(here, file), path.join(copy, file));
+    }
     const run = spawnSync(process.execPath, [path.join(copy, "oai-search-mcp.mjs")], {
       env: launcherEnv(home),
       input: "",
@@ -465,8 +629,8 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
       timeout: 30_000,
     });
     assert.equal(run.status, 1);
-    assert.match(run.stderr, /error: could not load the server .*run `pnpm build`/);
-    const [entry] = records(home);
+    assert.match(event(run.stderr, "launcher_error")?.message ?? "", /could not load the server .*run `pnpm build`/);
+    const [entry] = await records(home);
     assert.equal(entry.source, "zshrc");
     assert.ok(entry.serverError, "the log has no serverError");
   });

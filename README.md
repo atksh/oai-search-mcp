@@ -60,19 +60,35 @@ Use `node /path/to/oai-search-mcp/build/index.js` as the MCP command.
 
 ### Reading the key from `~/.zshrc`
 
-To keep the key only in `~/.zshrc`, run `node /path/to/oai-search-mcp/bin/oai-search-mcp.mjs` as the MCP command (from npm: `npx -p oai-search-mcp oai-search-mcp-zshrc`) and leave `OPENAI_API_KEY` out of the client config. On every start, the launcher runs a new interactive zsh, reads `OPENAI_API_KEY` from it, and then starts the server in the same process. A key rotated in `~/.zshrc` therefore reaches every client the next time the client starts the server. A client that caches its config, such as the Codex desktop app, must itself be restarted.
+To keep the key only in `~/.zshrc`, run the launcher instead of the server and leave `OPENAI_API_KEY` out of the client config:
+
+```jsonc
+{
+  "mcpServers": {
+    "oai-search": {
+      "command": "npx",
+      "args": ["-p", "oai-search-mcp", "oai-search-mcp-zshrc"]
+      // From a clone: "command": "node", "args": ["/path/to/oai-search-mcp/bin/oai-search-mcp.mjs"]
+    }
+  }
+}
+```
+
+On every start, the launcher runs a new interactive zsh, reads `OPENAI_API_KEY` from it, and then starts the server in the same process. `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID` and `OPENAI_BASE_URL` are read too, because a key only works with its own organization, project and endpoint. When `~/.zshrc` defines them, they replace the client's values.
+
+A rotated key reaches running servers as well. When the API rejects the key (HTTP 401), the server re-reads `~/.zshrc`, at most once every 30 seconds and once for all requests that failed together. If the key changed, it switches to the new key and retries each rejected request once. A client that caches its config, such as the Codex desktop app, still needs a restart to pick up config changes.
 
 The shell is isolated from the MCP channel, so nothing in `~/.zshrc` can break the server:
 
 - It has no controlling terminal (it starts in a new session), its stdin is `/dev/null`, and its stdout is discarded. Output, `read`s or terminal tricks in `~/.zshrc` are harmless.
-- The key comes back NUL-terminated on fd 11. Echoes, or `~/.zshrc` closing fds 3 to 9, cannot corrupt it, and a multi-line value is rejected instead of being truncated.
-- It inherits the client's environment except `OPENAI_API_KEY` and `ZDOTDIR`, with `SHELL` set to the zsh it runs. A stale key or a foreign `ZDOTDIR` from the client is ignored, while variables `~/.zshrc` may test, such as `TMUX` or `SSH_AUTH_SOCK`, still reach it.
+- The values come back NUL-terminated on fd 11. Echoes, or `~/.zshrc` closing fds 3 to 9, cannot corrupt them, and a multi-line key is rejected instead of being truncated.
+- It inherits the client's environment except the four OpenAI variables above and `ZDOTDIR`, with `SHELL` set to the zsh it runs. Stale values or a foreign `ZDOTDIR` from the client are ignored, while variables `~/.zshrc` may test, such as `TMUX` or `SSH_AUTH_SOCK`, still reach it.
 - A `~/.zshrc` that hangs is killed after `OAI_SEARCH_ZSHRC_TIMEOUT_MS` (default `10000`, range 100 to 25000, which stays under client startup timeouts such as Codex's 30 s), or when the launcher gets SIGTERM, SIGINT or SIGHUP during the probe. A probe shell that keeps running after reporting the key, for example in a slow `EXIT` trap, is killed after 1 s.
 - Background jobs started by `~/.zshrc` are not waited for or killed, and their stderr stays drained while the server runs.
 
-If the key cannot be read, the launcher falls back to an inherited `OPENAI_API_KEY` and prints an error, whatever `LOG_LEVEL` says, because that key may be stale. With no valid inherited key it exits with status 1. A `~/.zshrc` that needs a terminal to reach the key export, for example `read answer </dev/tty || return`, cannot work here, and neither can one that defines a function named `builtin`.
+If the key cannot be read at start, the launcher falls back to an inherited `OPENAI_API_KEY` and logs an error, whatever `LOG_LEVEL` says, because that key may be stale. With no valid inherited key it exits with status 1. The launcher keeps no copy of the key on disk, so there is no last-known-good key beyond that fallback. A `~/.zshrc` that needs a terminal to reach the key export, for example `read answer </dev/tty || return`, cannot work here, and neither can one that defines a function named `builtin`.
 
-Each start appends one JSON line to `~/Library/Logs/oai-search-mcp/launcher.log` on macOS (elsewhere `$XDG_STATE_HOME/oai-search-mcp/launcher.log`, or `~/.local/state/oai-search-mcp/launcher.log` when `XDG_STATE_HOME` is unset). The line records the time, the pid, the parent client, the key source (`zshrc`, `inherited` or `none`), the first 8 hex digits of the key's SHA-256, and any failure reason, including an interruption by a signal, the end of zsh's stderr, or a server that failed to load. The key itself is never logged, and `sk-` tokens and long secret-like strings in zsh's stderr are redacted. Set `OAI_SEARCH_LAUNCHER_LOG` to another absolute path (a leading `~/` is expanded; anything that is not a regular file is refused), or to `off` to disable the log. To see which key a server uses, compare its `sha256` with `printf %s "$OPENAI_API_KEY" | shasum -a 256`.
+The launcher writes JSON lines to stderr in the server's log format (events `launcher_key_loaded`, `launcher_key_fallback`, `launcher_key_refreshed`, `launcher_warning`, `launcher_error`). Each start, and each re-read after a 401, also appends one JSON line to `~/Library/Logs/oai-search-mcp/launcher.log` on macOS (elsewhere `$XDG_STATE_HOME/oai-search-mcp/launcher.log`, or `~/.local/state/oai-search-mcp/launcher.log` when `XDG_STATE_HOME` is unset). The line records the time, the pid, the parent client, the key source (`zshrc`, `inherited` or `none`), the first 8 hex digits of the key's SHA-256, the OpenAI settings taken from `~/.zshrc`, and any failure reason, including an interruption by a signal, the end of zsh's stderr, or a server that failed to load. The key itself is never logged, and `sk-` tokens and long secret-like strings in zsh's stderr are redacted. Set `OAI_SEARCH_LAUNCHER_LOG` to another absolute path (a leading `~/` is expanded; anything that is not a regular file is refused), or to `off` to disable the log. To see which key a server uses, compare its `sha256` with `printf %s "$OPENAI_API_KEY" | shasum -a 256`.
 
 ## Environment variables
 

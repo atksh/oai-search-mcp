@@ -8,10 +8,13 @@
 // - the key comes back NUL-terminated on a dedicated fd (11), so echoes in
 //   ~/.zshrc, or ~/.zshrc closing or redirecting fds 3-9, cannot corrupt it
 //   (zsh puts its own fds at the lowest free number from 10, so it skips 11);
-// - the client's environment is passed through except OPENAI_API_KEY and
-//   ZDOTDIR, so a stale key or a foreign ZDOTDIR (for example from a Cursor or
-//   VS Code terminal) cannot change the answer, while variables ~/.zshrc may
-//   test (TMUX, SSH_AUTH_SOCK, XDG_*) still reach it;
+// - the client's environment is passed through except the OpenAI connection
+//   variables and ZDOTDIR, so a stale key or a foreign ZDOTDIR (for example
+//   from a Cursor or VS Code terminal) cannot change the answer, while
+//   variables ~/.zshrc may test (TMUX, SSH_AUTH_SOCK, XDG_*) still reach it;
+// - OPENAI_ORG_ID, OPENAI_PROJECT_ID and OPENAI_BASE_URL are read along with
+//   the key, because a key only works with its own organization, project and
+//   endpoint;
 // - a hung ~/.zshrc is killed (whole process group) after a timeout, or when
 //   this process receives SIGTERM, SIGINT or SIGHUP during the probe;
 // - background jobs started by ~/.zshrc are not waited for, and the stderr
@@ -26,16 +29,19 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import os from "node:os";
 
-export const DEFAULT_ZSH = "/bin/zsh";
+const DEFAULT_ZSH = "/bin/zsh";
 export const DEFAULT_TIMEOUT_MS = 10_000;
 // Keep this below 14: Node 26.13 aborts (SIGABRT) on stdio arrays of 15 or more entries.
-export const KEY_FD = 11;
+const KEY_FD = 11;
 const FALLBACK_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
-const DROPPED_VARS = ["OPENAI_API_KEY", "ZDOTDIR"];
+/** Settings that belong to the key and are taken from ~/.zshrc with it. */
+export const COMPANION_VARS = ["OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_BASE_URL"];
+const PROBED_VARS = ["OPENAI_API_KEY", ...COMPANION_VARS];
+export const DROPPED_VARS = [...PROBED_VARS, "ZDOTDIR"];
 // `\builtin` bypasses any alias or function named `print`, and quoting
 // `\print` also defeats a global alias (`alias -g print=...`).
-// -N terminates the value with NUL, so a multi-line value arrives whole.
-const PROBE = `\\builtin \\print -rN -- "\${OPENAI_API_KEY-}" >&${KEY_FD}`;
+// -N terminates each value with NUL, so a multi-line value arrives whole.
+const PROBE = `\\builtin \\print -rN -- ${PROBED_VARS.map((name) => `"\${${name}-}"`).join(" ")} >&${KEY_FD}`;
 // Time allowed for key bytes written just before zsh exits to arrive.
 const EXIT_GRACE_MS = 200;
 // How long a probe shell may keep running after it reported the key.
@@ -87,10 +93,28 @@ export function classify(value, source = "~/.zshrc") {
   return { ok: true, key: value };
 }
 
+/** Keep the companion settings ~/.zshrc defines; an unusable one is dropped with a warning. */
+function companionSettings(values) {
+  const settings = {};
+  const warnings = [];
+  COMPANION_VARS.forEach((name, index) => {
+    const value = values[index] ?? "";
+    if (value === "") return;
+    if (/[\s\x00-\x1f\x7f]/.test(value)) {
+      warnings.push(`ignoring ${name} from ~/.zshrc: it contains whitespace or a control character`);
+    } else if (name === "OPENAI_BASE_URL" && !/^https?:\/\/[^/]/.test(value)) {
+      warnings.push(`ignoring ${name} from ~/.zshrc: it is not an http(s) URL`);
+    } else {
+      settings[name] = value;
+    }
+  });
+  return { settings, warnings };
+}
+
 /**
- * Resolve OPENAI_API_KEY the way a new interactive zsh sees it.
- * Never rejects. Resolves to
- *   { ok: true, key, warning?, ms, pid, stderrBytes } or
+ * Resolve OPENAI_API_KEY (and its companion settings) the way a new
+ * interactive zsh sees them. Never rejects. Resolves to
+ *   { ok: true, key, settings, warning?, warnings, ms, pid, stderrBytes } or
  *   { ok: false, reason, stderr?, ms, pid, stderrBytes }.
  */
 export function readKeyFromZshrc({
@@ -203,8 +227,16 @@ export function readKeyFromZshrc({
     });
     child.stdio[KEY_FD]?.setEncoding("utf8").on("data", (chunk) => {
       keyBuffer += chunk;
-      const end = keyBuffer.indexOf("\0");
-      if (end !== -1) finish(classify(keyBuffer.slice(0, end)));
+      const values = keyBuffer.split("\0");
+      // Every value is NUL-terminated, so all have arrived once there are more parts than values.
+      if (values.length <= PROBED_VARS.length) return;
+      const result = classify(values[0]);
+      if (!result.ok) {
+        finish(result);
+        return;
+      }
+      const { settings, warnings } = companionSettings(values.slice(1));
+      finish({ ...result, settings, warnings });
     });
     child.on("exit", (code, signal) => {
       graceTimer = setTimeout(
