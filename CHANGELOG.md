@@ -7,12 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`~/.zshrc` key launcher**: `bin/oai-search-mcp.mjs` (npm bin `oai-search-mcp-zshrc`) reads `OPENAI_API_KEY`, and `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID` and `OPENAI_BASE_URL` when set, from the current `~/.zshrc` on every start, so MCP client configs need no key. It logs each start to `launcher.log`. See "Reading the key from `~/.zshrc`" in the README.
+- **Key rotation without a restart**: With the launcher, a request rejected with HTTP 401 makes the server re-read `~/.zshrc` (shared by concurrent failures, at most every 30 s). If the key changed, the server switches to it and retries that request once.
+
+### Security
+
+- **Dependencies**: `@modelcontextprotocol/sdk` 1.32.2 (express, hono, ajv/fast-uri, body-parser and proxy-addr fixes) and `zod` 4.6.7 (memory exhaustion while validating oversized collections). The `qs` override moves from 6.15.3 to 6.17.1. `pnpm audit --prod` now reports no known vulnerabilities.
+
 ### Fixed
 
+- **Invalid enum env values**: An unknown `SEARCH_CONTEXT_SIZE`, `REASONING_EFFORT`, `OUTPUT_VERBOSITY` or `LOG_LEVEL` no longer reaches the API on every request or silences all logs; it is ignored with a warning.
 - **Search-budget hard fail**: When a PTC program requested more `search_web` calls than remained, the server threw and the MCP tool returned only `Error: Programmatic search budget exceeded`. Excess calls now receive a structured error, already-gathered evidence is kept, and the outer model continues to a final answer. Later rounds use `tool_choice: none` once the budget is spent.
 
 ### Changed
 
+- **GPT-6.1 Terra**: Replaced `gpt-5.6-sol` with `gpt-6.1-terra` for both outer PTC orchestration and inner web retrieval. Terra accepts the same `reasoning.effort` values (`none` to `max`) at a quarter of Sol's token price.
+- **Default reasoning effort**: `REASONING_EFFORT` now defaults to `high` instead of `medium`.
+- **System prompt**: `SYSTEM_PROMPT.md` names the model as `{{MODEL}}`, filled in from the pinned model when it is loaded.
+- **Batch description**: `web-search-batch` now says it runs up to 3 queries at a time, as it always did.
 - **`search_web` output**: Each function result now includes `remaining_calls` so the hosted program can stop when the budget is exhausted.
 - **PTC instructions**: The outer prompt now interpolates the configured cap and remaining search count on every round.
 

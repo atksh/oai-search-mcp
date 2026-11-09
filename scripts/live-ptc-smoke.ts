@@ -14,7 +14,7 @@ const client = new OpenAI({
 
 const result = await executePtcSearch(
   client,
-  "Find two official OpenAI documentation pages about GPT-5.6 and summarize one supported feature from each. Include clickable links.",
+  `Find two official OpenAI documentation pages about the ${MODEL} model and summarize one supported feature from each. Include clickable links.`,
   {
     reasoningEffort: "low",
     searchContextSize: "low",
@@ -64,6 +64,7 @@ const summary = {
   status:
     missingTypes.length === 0 &&
     wrongModels.length === 0 &&
+    result.metrics.innerSearchCalls >= 1 &&
     hasLink &&
     followUpHasLink &&
     compactionWorked

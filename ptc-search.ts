@@ -11,7 +11,7 @@ import type {
   Tool,
 } from "openai/resources/responses/responses";
 
-export const MODEL = "gpt-5.6-sol" as const;
+export const MODEL = "gpt-6.1-terra" as const;
 export const SEARCH_FUNCTION_NAME = "search_web" as const;
 export const DEFAULT_MAX_SEARCH_CALLS = 5;
 export const DEFAULT_MAX_PTC_ROUNDS = 8;

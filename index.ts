@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import OpenAI from "openai";
 import type { ResponseInput } from "openai/resources/responses/responses";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,7 @@ import {
   MODEL,
   type OutputVerbosity,
   type ReasoningEffort,
+  type ResponsesClientLike,
   type SearchContextSize,
 } from "./ptc-search.js";
 
@@ -177,20 +179,49 @@ function parseBoolWithFallback(
   return value.toLowerCase() === "true";
 }
 
+// Parse an enum-valued env var. An unknown value would otherwise reach the
+// API (or silence the logger) on every request, so warn and use the default.
+function parseEnumWithFallback<T extends string>(
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = raw.trim().toLowerCase();
+  if ((allowed as readonly string[]).includes(value)) return value as T;
+  console.error(
+    `Warning: ignoring ${name}=${JSON.stringify(raw)} (expected one of ${allowed.join(", ")}); using ${fallback}.`,
+  );
+  return fallback;
+}
+
+const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+const SEARCH_CONTEXT_SIZES = ["low", "medium", "high"] as const;
+const OUTPUT_VERBOSITIES = ["low", "medium", "high"] as const;
+const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
+
 // Configuration from environment variables
 const config = {
   apiKey: process.env.OPENAI_API_KEY,
   model: MODEL,
   maxRetries: parseIntWithFallback(process.env.OPENAI_MAX_RETRIES, 3),
   timeout: parseIntWithFallback(process.env.OPENAI_API_TIMEOUT, 300000),
-  searchContextSize: (process.env.SEARCH_CONTEXT_SIZE || "medium") as
-    | "low"
-    | "medium"
-    | "high",
-  reasoningEffort: (process.env.REASONING_EFFORT ||
-    "medium") as ReasoningEffort,
-  outputVerbosity: (process.env.OUTPUT_VERBOSITY ||
-    "medium") as OutputVerbosity,
+  searchContextSize: parseEnumWithFallback<SearchContextSize>(
+    "SEARCH_CONTEXT_SIZE",
+    SEARCH_CONTEXT_SIZES,
+    "medium",
+  ),
+  reasoningEffort: parseEnumWithFallback<ReasoningEffort>(
+    "REASONING_EFFORT",
+    REASONING_EFFORTS,
+    "high",
+  ),
+  outputVerbosity: parseEnumWithFallback<OutputVerbosity>(
+    "OUTPUT_VERBOSITY",
+    OUTPUT_VERBOSITIES,
+    "medium",
+  ),
   systemPrompt: process.env.SYSTEM_PROMPT,
   // Session management
   sessionTtlMs: parseIntWithFallback(process.env.SESSION_TTL_MS, 14400000), // 4 hours
@@ -206,7 +237,7 @@ const config = {
     200000
   ),
   // Logging
-  logLevel: (process.env.LOG_LEVEL || "info") as LogLevel,
+  logLevel: parseEnumWithFallback<LogLevel>("LOG_LEVEL", LOG_LEVELS, "info"),
 };
 
 // Initialize logger and session store
@@ -233,7 +264,8 @@ function readDefaultSystemPrompt(): string | undefined {
   for (const candidate of defaultPromptCandidates) {
     try {
       if (fs.existsSync(candidate)) {
-        const content = fs.readFileSync(candidate, "utf8");
+        // The file names the model as {{MODEL}} so a model change needs no prompt edit.
+        const content = fs.readFileSync(candidate, "utf8").replaceAll("{{MODEL}}", MODEL);
         if (content && content.trim().length > 0) return content;
       }
     } catch {
@@ -254,6 +286,75 @@ const openai = new OpenAI({
   maxRetries: config.maxRetries,
   timeout: config.timeout,
 });
+
+// =============================================================================
+// API key rotation
+// =============================================================================
+
+// bin/oai-search-mcp.mjs registers this hook to re-read the key (and its
+// organization, project and base URL) from ~/.zshrc. Without the launcher it
+// is absent and a 401 is returned as before.
+type KeyRefresh = (() => Promise<{ key: string; settings: Record<string, string> } | null>) | undefined;
+const refreshHook = (globalThis as Record<symbol, unknown>)[
+  Symbol.for("oai-search-mcp.refreshApiKey")
+] as KeyRefresh;
+const KEY_REFRESH_MIN_INTERVAL_MS = 30_000;
+let keyRefresh: Promise<void> | null = null;
+let lastKeyRefreshAt = 0;
+
+function keyFingerprint(key: string | null): string | undefined {
+  return key ? createHash("sha256").update(key).digest("hex").slice(0, 8) : undefined;
+}
+
+/** Re-read the key once for all concurrent 401s, at most every 30 s. */
+async function refreshApiKeyAfter401(): Promise<void> {
+  if (!refreshHook) return;
+  if (!keyRefresh) {
+    if (Date.now() - lastKeyRefreshAt < KEY_REFRESH_MIN_INTERVAL_MS) return;
+    lastKeyRefreshAt = Date.now();
+    keyRefresh = (async () => {
+      try {
+        const fresh = await refreshHook();
+        if (!fresh || fresh.key === openai.apiKey) return;
+        const previous = keyFingerprint(openai.apiKey);
+        openai.apiKey = fresh.key;
+        const { OPENAI_ORG_ID, OPENAI_PROJECT_ID, OPENAI_BASE_URL } = fresh.settings;
+        if (OPENAI_ORG_ID) openai.organization = OPENAI_ORG_ID;
+        if (OPENAI_PROJECT_ID) openai.project = OPENAI_PROJECT_ID;
+        if (OPENAI_BASE_URL) openai.baseURL = OPENAI_BASE_URL;
+        logger.info("api_key_rotated", { from: previous, to: keyFingerprint(fresh.key) });
+      } catch (error) {
+        logger.error("api_key_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        keyRefresh = null;
+      }
+    })();
+  }
+  await keyRefresh;
+}
+
+/** Run one API request; after a 401, retry it once if the key changed meanwhile. */
+async function withKeyRotation<T>(request: () => Promise<T>): Promise<T> {
+  const keyAtStart = openai.apiKey;
+  try {
+    return await request();
+  } catch (error) {
+    if ((error as { status?: unknown } | null)?.status !== 401) throw error;
+    if (openai.apiKey === keyAtStart) await refreshApiKeyAfter401();
+    if (openai.apiKey === keyAtStart) throw error;
+    return request();
+  }
+}
+
+// Every request of the PTC loop survives a key rotation on its own, so no
+// completed round is repeated.
+const rotatingClient: ResponsesClientLike = {
+  responses: {
+    create: (body) => withKeyRotation(() => openai.responses.create(body)),
+  },
+};
 
 // =============================================================================
 // Compaction
@@ -282,10 +383,12 @@ async function compactConversation(
         totalTokens: session.totalTokens,
       });
 
-      const compacted = await openai.responses.compact({
-        model: config.model,
-        previous_response_id: session.lastResponseId,
-      });
+      const compacted = await withKeyRotation(() =>
+        openai.responses.compact({
+          model: config.model,
+          previous_response_id: session.lastResponseId,
+        }),
+      );
 
       logger.info("compaction_success", {
         sessionId: session.id,
@@ -360,7 +463,7 @@ async function executeSingleSearch(
       hasCompactedInput: !!options?.compactedInput,
     });
 
-    const response = await executePtcSearch(openai, input, {
+    const response = await executePtcSearch(rotatingClient, input, {
       instructions,
       previousResponseId: options?.previousResponseId,
       compactedInput: options?.compactedInput,
@@ -403,7 +506,7 @@ async function executeSingleSearch(
     // Provide more helpful error messages for common issues
     let errorText: string;
     if (errorMessage.includes("api_key")) {
-      errorText = `Error: Invalid API key. Please check your OPENAI_API_KEY environment variable.`;
+      errorText = `Error: Invalid API key. Check OPENAI_API_KEY (in ~/.zshrc when the server runs through bin/oai-search-mcp.mjs).`;
     } else if (errorMessage.includes("rate_limit")) {
       errorText = `Error: Rate limit exceeded. Please try again later.`;
     } else if (errorMessage.includes("timeout")) {
@@ -466,10 +569,10 @@ Session Support:
         "Session ID for conversation continuity. If omitted, a new session is created. Pass the sessionId from a previous response to continue the conversation with context."
       ),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high", "xhigh", "max"])
+      .enum(REASONING_EFFORTS)
       .optional()
       .describe(
-        "Outer GPT-5.6 orchestration and synthesis effort: 'none', 'low', 'medium' (balanced, recommended), 'high', 'xhigh', or 'max' (hardest quality-first tasks). Inner web retrieval always uses 'none' to bound multiplied cost."
+        `Outer ${MODEL} orchestration and synthesis effort: 'none', 'low', 'medium', 'high', 'xhigh', or 'max' (hardest quality-first tasks). Server default: '${config.reasoningEffort}'. Inner web retrieval always uses 'none' to bound multiplied cost.`
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
@@ -631,7 +734,7 @@ Use this tool when you need to:
 - Gather information from various angles on the same subject
 - Perform independent searches that don't depend on each other
 
-All queries are executed concurrently, and results are returned in the same order as the input array. The specified options (reasoning effort, search context size, verbosity, format) are applied uniformly to all queries in the batch.
+Queries run in parallel, up to 3 at a time, and results are returned in the same order as the input array. The specified options (reasoning effort, search context size, verbosity, format) are applied uniformly to all queries in the batch.
 
 The tool supports multiple output formats:
 - 'structured' (default): Each query result is returned as a separate content block with metadata, making it easy to parse and process individual results
@@ -643,15 +746,15 @@ Error handling: Individual query failures don't stop the batch; each query's res
     inputs: z
       .array(z.string())
       .describe(
-        "Array of search queries to execute in parallel. Each query should be independent and can be processed concurrently. Results are returned in the same order as this array. Maximum 10 queries per batch. Example: ['React hooks best practices', 'Vue 3 composition API', 'Angular dependency injection'].",
+        "Array of search queries to execute in parallel, up to 3 at a time. Each query should be independent. Results are returned in the same order as this array. Maximum 10 queries per batch. Example: ['React hooks best practices', 'Vue 3 composition API', 'Angular dependency injection'].",
       )
       .min(1)
       .max(10),
     reasoningEffort: z
-      .enum(["none", "low", "medium", "high", "xhigh", "max"])
+      .enum(REASONING_EFFORTS)
       .optional()
       .describe(
-        "Outer GPT-5.6 orchestration and synthesis effort applied to all queries: 'none', 'low', 'medium' (balanced, recommended), 'high', 'xhigh', or 'max'. Inner web retrieval always uses 'none'.",
+        `Outer ${MODEL} orchestration and synthesis effort applied to all queries: 'none', 'low', 'medium', 'high', 'xhigh', or 'max'. Server default: '${config.reasoningEffort}'. Inner web retrieval always uses 'none'.`,
       ),
     searchContextSize: z
       .enum(["low", "medium", "high"])
