@@ -15,8 +15,12 @@
 // - a hung ~/.zshrc is killed (whole process group) after a timeout, or when
 //   this process receives SIGTERM, SIGINT or SIGHUP during the probe;
 // - background jobs started by ~/.zshrc are not waited for, and the stderr
-//   pipe they inherit stays open so they never get SIGPIPE.
-// Limit: if this process is SIGKILLed during the probe, a hung zsh survives.
+//   pipe they inherit stays drained while this process lives, so they do not
+//   get SIGPIPE while the server runs;
+// - a probe shell still running 1 s after reporting (a slow EXIT trap or
+//   zshexit hook) is killed, without touching its background jobs.
+// Limits: if this process is SIGKILLed during the probe, a hung zsh survives;
+// a function named `builtin` in ~/.zshrc defeats the probe.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -28,11 +32,14 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 export const KEY_FD = 11;
 const FALLBACK_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 const DROPPED_VARS = ["OPENAI_API_KEY", "ZDOTDIR"];
-// `\builtin` bypasses any alias or function named `print` defined in ~/.zshrc.
+// `\builtin` bypasses any alias or function named `print`, and quoting
+// `\print` also defeats a global alias (`alias -g print=...`).
 // -N terminates the value with NUL, so a multi-line value arrives whole.
-const PROBE = `\\builtin print -rN -- "\${OPENAI_API_KEY-}" >&${KEY_FD}`;
+const PROBE = `\\builtin \\print -rN -- "\${OPENAI_API_KEY-}" >&${KEY_FD}`;
 // Time allowed for key bytes written just before zsh exits to arrive.
 const EXIT_GRACE_MS = 200;
+// How long a probe shell may keep running after it reported the key.
+const REAP_AFTER_MS = 1000;
 const FORWARDED_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"];
 
 /** The client's environment minus what must not influence ~/.zshrc. */
@@ -41,9 +48,17 @@ export function shellEnv(parentEnv = process.env, zsh = DEFAULT_ZSH) {
   for (const [name, value] of Object.entries(parentEnv)) {
     if (value !== undefined && !DROPPED_VARS.includes(name)) env[name] = value;
   }
-  env.HOME ||= os.homedir();
-  env.USER ||= os.userInfo().username;
-  env.LOGNAME ||= env.USER;
+  try {
+    env.HOME ||= os.homedir();
+  } catch {
+    // No passwd entry: zsh falls back to its own default.
+  }
+  try {
+    env.USER ||= os.userInfo().username;
+  } catch {
+    // No passwd entry for this uid.
+  }
+  if (env.USER) env.LOGNAME ||= env.USER;
   env.PATH ||= FALLBACK_PATH;
   env.SHELL = zsh;
   return env;
@@ -53,18 +68,21 @@ export function fingerprint(key) {
   return createHash("sha256").update(key).digest("hex").slice(0, 8);
 }
 
-/** Hide anything token-like before a shell message reaches a log. */
+/**
+ * Hide secret-looking strings before a shell message reaches a log, while
+ * keeping ordinary command, file and plugin names readable.
+ */
 export function redact(text) {
-  return text.replace(/[A-Za-z0-9_\-+=]{16,}/g, "[redacted]");
+  return text.replace(/sk-[A-Za-z0-9_-]+/g, "sk-[redacted]").replace(/[A-Za-z0-9_\-+=]{32,}/g, "[redacted]");
 }
 
-export function classify(value) {
-  if (value === "") return { ok: false, reason: "OPENAI_API_KEY is not set after ~/.zshrc runs" };
+export function classify(value, source = "~/.zshrc") {
+  if (value === "") return { ok: false, reason: `OPENAI_API_KEY is not set after ${source} runs` };
   if (/[\s\x00-\x1f\x7f]/.test(value)) {
-    return { ok: false, reason: "OPENAI_API_KEY from ~/.zshrc contains whitespace, a line break or a control character" };
+    return { ok: false, reason: `OPENAI_API_KEY from ${source} contains whitespace, a line break or a control character` };
   }
   if (!value.startsWith("sk-")) {
-    return { ok: true, key: value, warning: "OPENAI_API_KEY from ~/.zshrc does not start with sk-" };
+    return { ok: true, key: value, warning: `OPENAI_API_KEY from ${source} does not start with sk-` };
   }
   return { ok: true, key: value };
 }
@@ -79,7 +97,9 @@ export function readKeyFromZshrc({
   env = process.env,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   zsh = DEFAULT_ZSH,
-  handleSignals = true,
+  // Called synchronously when SIGTERM, SIGINT or SIGHUP interrupts the probe,
+  // before the signal is re-raised, so the caller can still log.
+  onSignal,
 } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -101,6 +121,28 @@ export function readKeyFromZshrc({
     };
     const onProcessExit = () => killGroup();
 
+    // Kill only the shell itself (not its background jobs) if it outlives its report.
+    const reapProbeShell = () => {
+      if (!child?.pid) return;
+      const running = () => child.exitCode === null && child.signalCode === null;
+      if (!running()) return;
+      const killShell = () => {
+        if (!running()) return;
+        try {
+          process.kill(child.pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      };
+      const timer = setTimeout(killShell, REAP_AFTER_MS);
+      timer.unref();
+      process.once("exit", killShell);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        process.off("exit", killShell);
+      });
+    };
+
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -114,30 +156,36 @@ export function readKeyFromZshrc({
       child?.stderr?.on("data", () => {});
       child?.stderr?.unref?.();
       child?.unref();
+      reapProbeShell();
       const extra = result.ok ? {} : { stderr: redact(stderrTail) };
       resolve({ ...result, ...extra, ms: Date.now() - started, pid: child?.pid, stderrBytes });
     };
 
     // Install the handlers before spawning: a signal that arrives while no
     // listener exists takes the default action and would orphan the shell.
-    if (handleSignals) {
-      for (const signal of FORWARDED_SIGNALS) {
-        const handler = () => {
-          killGroup();
-          finish({ ok: false, reason: `interrupted by ${signal}` });
-          process.kill(process.pid, signal);
-        };
-        signalHandlers.set(signal, handler);
-        process.on(signal, handler);
-      }
+    for (const signal of FORWARDED_SIGNALS) {
+      const handler = () => {
+        killGroup();
+        finish({ ok: false, reason: `interrupted by ${signal}` });
+        try {
+          onSignal?.(signal);
+        } catch {
+          // Logging must not keep the process alive.
+        }
+        // Re-raise for the default action, unless the host handles this signal itself.
+        if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+      };
+      signalHandlers.set(signal, handler);
+      process.on(signal, handler);
     }
     process.on("exit", onProcessExit);
 
     const stdio = Array.from({ length: KEY_FD + 1 }, () => "ignore");
     stdio[2] = "pipe";
     stdio[KEY_FD] = "pipe";
+    const childEnv = shellEnv(env, zsh);
     try {
-      child = spawn(zsh, ["-i", "-c", PROBE], { env: shellEnv(env, zsh), stdio, detached: true });
+      child = spawn(zsh, ["-i", "-c", PROBE], { env: childEnv, stdio, detached: true });
     } catch (error) {
       finish({ ok: false, reason: `could not start ${zsh}: ${error.message}` });
       return;

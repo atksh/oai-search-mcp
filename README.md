@@ -67,11 +67,12 @@ The shell is isolated from the MCP channel, so nothing in `~/.zshrc` can break t
 - It has no controlling terminal (it starts in a new session), its stdin is `/dev/null`, and its stdout is discarded. Output, `read`s or terminal tricks in `~/.zshrc` are harmless.
 - The key comes back NUL-terminated on fd 11. Echoes, or `~/.zshrc` closing fds 3 to 9, cannot corrupt it, and a multi-line value is rejected instead of being truncated.
 - It inherits the client's environment except `OPENAI_API_KEY` and `ZDOTDIR`, with `SHELL` set to the zsh it runs. A stale key or a foreign `ZDOTDIR` from the client is ignored, while variables `~/.zshrc` may test, such as `TMUX` or `SSH_AUTH_SOCK`, still reach it.
-- A `~/.zshrc` that hangs is killed after `OAI_SEARCH_ZSHRC_TIMEOUT_MS` (default `10000`, range 100 to 600000), or when the launcher gets SIGTERM, SIGINT or SIGHUP during the probe. Background jobs started by `~/.zshrc` are not waited for and keep a working stderr.
+- A `~/.zshrc` that hangs is killed after `OAI_SEARCH_ZSHRC_TIMEOUT_MS` (default `10000`, range 100 to 25000, which stays under client startup timeouts such as Codex's 30 s), or when the launcher gets SIGTERM, SIGINT or SIGHUP during the probe. A probe shell that keeps running after reporting the key, for example in a slow `EXIT` trap, is killed after 1 s.
+- Background jobs started by `~/.zshrc` are not waited for or killed, and their stderr stays drained while the server runs.
 
-If the key cannot be read, the launcher falls back to an inherited `OPENAI_API_KEY` and prints an error, whatever `LOG_LEVEL` says, because that key may be stale. With no inherited key it exits with status 1. A `~/.zshrc` that needs a terminal to reach the key export, for example `read answer </dev/tty || return`, cannot work here.
+If the key cannot be read, the launcher falls back to an inherited `OPENAI_API_KEY` and prints an error, whatever `LOG_LEVEL` says, because that key may be stale. With no valid inherited key it exits with status 1. A `~/.zshrc` that needs a terminal to reach the key export, for example `read answer </dev/tty || return`, cannot work here, and neither can one that defines a function named `builtin`.
 
-Each start appends one JSON line to `~/Library/Logs/oai-search-mcp/launcher.log` on macOS (elsewhere `$XDG_STATE_HOME/oai-search-mcp/launcher.log`, or `~/.local/state/oai-search-mcp/launcher.log` when `XDG_STATE_HOME` is unset). The line records the time, the pid, the parent client, the key source (`zshrc`, `inherited` or `none`), the first 8 hex digits of the key's SHA-256, and any failure reason. The key itself is never logged. Set `OAI_SEARCH_LAUNCHER_LOG` to another path, or to `off` to disable the log. To see which key a server uses, compare its `sha256` with `printf %s "$OPENAI_API_KEY" | shasum -a 256`.
+Each start appends one JSON line to `~/Library/Logs/oai-search-mcp/launcher.log` on macOS (elsewhere `$XDG_STATE_HOME/oai-search-mcp/launcher.log`, or `~/.local/state/oai-search-mcp/launcher.log` when `XDG_STATE_HOME` is unset). The line records the time, the pid, the parent client, the key source (`zshrc`, `inherited` or `none`), the first 8 hex digits of the key's SHA-256, and any failure reason, including an interruption by a signal, the end of zsh's stderr, or a server that failed to load. The key itself is never logged, and `sk-` tokens and long secret-like strings in zsh's stderr are redacted. Set `OAI_SEARCH_LAUNCHER_LOG` to another absolute path (a leading `~/` is expanded; anything that is not a regular file is refused), or to `off` to disable the log. To see which key a server uses, compare its `sha256` with `printf %s "$OPENAI_API_KEY" | shasum -a 256`.
 
 ## Environment variables
 
@@ -90,7 +91,7 @@ Each start appends one JSON line to `~/Library/Logs/oai-search-mcp/launcher.log`
 | `COMPACTION_QUERY_THRESHOLD` | No | `20` | Queries before compaction |
 | `COMPACTION_TOKEN_THRESHOLD` | No | `200000` | Outer conversation tokens before compaction |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
-| `OAI_SEARCH_ZSHRC_TIMEOUT_MS` | No | `10000` | Launcher only: time allowed for `~/.zshrc` to run (100 to 600000) |
+| `OAI_SEARCH_ZSHRC_TIMEOUT_MS` | No | `10000` | Launcher only: time allowed for `~/.zshrc` to run (100 to 25000) |
 | `OAI_SEARCH_LAUNCHER_LOG` | No | see above | Launcher only: path of `launcher.log`, or `off` |
 
 An unknown value of `SEARCH_CONTEXT_SIZE`, `REASONING_EFFORT`, `OUTPUT_VERBOSITY` or `LOG_LEVEL` is ignored with a warning on stderr, and the default is used.

@@ -12,15 +12,16 @@
 - With no `reasoningEffort` in the tool call and no `REASONING_EFFORT` set, the stored outer response recorded `reasoning.effort: "high"`.
 - The launcher read `OPENAI_API_KEY` from the real `~/.zshrc` (logged by SHA-256 fingerprint only) under the normal environment and a Dock-like minimal environment, in 30 concurrent starts, and with a stale `OPENAI_API_KEY` or a foreign `ZDOTDIR` inherited.
 - Fixture `~/.zshrc` files that echo, read stdin, close fds 3 to 9, alias `print`, hang, exit early, start background jobs, or set a multi-line key behave as documented. The probe shell never gets a controlling terminal, even under a pty.
-- A SIGTERM during the probe killed the probe shell in 40 of 40 runs at 8-way parallelism.
+- A SIGTERM during the probe killed the probe shell in 40 of 40 runs at 8-way parallelism, and the launcher logs the interruption before it dies.
 - Unknown `REASONING_EFFORT`, `SEARCH_CONTEXT_SIZE`, `OUTPUT_VERBOSITY` and `LOG_LEVEL` values are ignored with a warning; differently cased valid values are accepted.
 
 ## Commands and results
 
 | Command | Result |
 | --- | --- |
-| `pnpm test` | Passed: builds first, then 37 tests, 0 failures, 0 skipped |
-| `ZDOTDIR=<empty dir> node --test bin/zshrc-key.test.mjs` | Passed: 25 tests |
+| `pnpm test` | Passed: builds first, then 45 tests, 0 failures, 0 skipped |
+| `ZDOTDIR=<empty dir> node --test bin/zshrc-key.test.mjs` | Passed: 33 tests |
+| `node --test bin/zshrc-key.test.mjs`, 4 copies in parallel | 28 later runs passed, 8 of them under 8 busy `yes` processes; one earlier batch of 12 had failures whose test names were not captured |
 | `pnpm build` | Passed: TypeScript compiled and runtime assets copied |
 | `make check` | Passed: build artifacts verified |
 | `pnpm test:live` | Passed: live GPT-6.1 Terra/PTC, citations, state, and compaction |

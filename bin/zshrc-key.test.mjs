@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +49,18 @@ function pidAlive(pid) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** True once pid is gone or a zombie; kill(pid, 0) alone still succeeds for an unreaped zombie. */
+async function waitDead(pid, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!pidAlive(pid)) return true;
+    const stat = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+    if (stat === "" || stat.startsWith("Z")) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(25);
+  }
+}
+
 async function waitForFile(file, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (!existsSync(file) || readFileSync(file, "utf8").trim() === "") {
@@ -94,9 +106,11 @@ describe("classify and redact", () => {
     for (const bad of ["sk-a\nb", "sk-a\r", "sk-a b"]) assert.equal(classify(bad).ok, false, JSON.stringify(bad));
   });
 
-  test("redact hides token-like strings of 16 or more characters", () => {
-    assert.equal(redact("x sk-abcdefghijklmnop y"), "x [redacted] y");
-    assert.equal(redact("/Users/me/.zshrc:12: command not found: foo"), "/Users/me/.zshrc:12: command not found: foo");
+  test("redact hides sk- tokens and 32+ character runs but keeps diagnostics readable", () => {
+    assert.equal(redact("x sk-abc123 y"), "x sk-[redacted] y");
+    assert.equal(redact(`token ${"a1".repeat(16)}`), "token [redacted]");
+    const diagnostic = "/Users/me/.oh-my-zsh/plugins/zsh-autosuggestions/x.zsh:12: command not found: some_very_long_helper_name";
+    assert.equal(redact(diagnostic), diagnostic);
   });
 });
 
@@ -131,6 +145,22 @@ describe("readKeyFromZshrc", { skip: !hasZsh && "zsh is not installed" }, () => 
     );
     const result = await readKeyFromZshrc({ env: envFor(home) });
     assert.equal(result.key, "sk-test-alias");
+  });
+
+  test("ignores a global alias for print defined in ~/.zshrc", async () => {
+    const home = fakeHome("alias -g print='echo hijacked'\nexport OPENAI_API_KEY=sk-test-global-alias\n");
+    const result = await readKeyFromZshrc({ env: envFor(home) });
+    assert.equal(result.key, "sk-test-global-alias");
+  });
+
+  test("kills a probe shell whose EXIT trap keeps it running, but not its background jobs", async () => {
+    const home = fakeHome(
+      "export OPENAI_API_KEY=sk-test-trap\n(sleep 3; print alive > $HOME/bg.txt) &!\ntrap 'sleep 30' EXIT\n",
+    );
+    const result = await readKeyFromZshrc({ env: envFor(home) });
+    assert.equal(result.key, "sk-test-trap");
+    assert.ok(await waitDead(result.pid, 3000), "the probe zsh is still running");
+    assert.equal(await waitForFile(path.join(home, "bg.txt"), 6000), "alive");
   });
 
   test("ignores a stale inherited key, even with a conditional assignment", async () => {
@@ -185,8 +215,7 @@ describe("readKeyFromZshrc", { skip: !hasZsh && "zsh is not installed" }, () => 
     assert.match(result.reason, /did not finish within 1000 ms/);
     assert.ok(result.ms < 3000, `took ${result.ms} ms`);
     const pid = Number(await waitForFile(path.join(home, "zsh.pid")));
-    await sleep(200);
-    assert.equal(pidAlive(pid), false, "the hung zsh is still running");
+    assert.ok(await waitDead(pid), "the hung zsh is still running");
   });
 
   test("kills the shell and still dies by the signal when SIGTERM arrives during the probe", async () => {
@@ -200,8 +229,30 @@ describe("readKeyFromZshrc", { skip: !hasZsh && "zsh is not installed" }, () => 
     wrapper.kill("SIGTERM");
     const [exitCode, signal] = await new Promise((r) => wrapper.on("exit", (c, s) => r([c, s])));
     assert.equal(signal, "SIGTERM", `wrapper exited with code ${exitCode}`);
-    await sleep(200);
-    assert.equal(pidAlive(zshPid), false, "the probe zsh outlived its parent");
+    assert.ok(await waitDead(zshPid), "the probe zsh outlived its parent");
+  });
+
+  test("does not re-raise a signal that the host process handles itself", async () => {
+    const home = fakeHome("print $$ > $HOME/zsh.pid\nsleep 30\n");
+    const code = [
+      `import {readKeyFromZshrc} from ${JSON.stringify(moduleUrl)};`,
+      "let calls = 0;",
+      "process.on('SIGTERM', () => { calls++; setTimeout(() => { console.log('calls=' + calls); process.exit(0); }, 300); });",
+      "await readKeyFromZshrc({timeoutMs: 60000});",
+    ].join("\n");
+    const wrapper = spawn(process.execPath, ["--input-type=module", "-e", code], {
+      env: isolatedEnv(home),
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let out = "";
+    wrapper.stdout.on("data", (chunk) => (out += chunk));
+    const zshPid = Number(await waitForFile(path.join(home, "zsh.pid")));
+    wrapper.kill("SIGTERM");
+    const [exitCode, signal] = await new Promise((r) => wrapper.on("exit", (c, s) => r([c, s])));
+    assert.equal(signal, null);
+    assert.equal(exitCode, 0);
+    assert.equal(out.trim(), "calls=1");
+    assert.ok(await waitDead(zshPid), "the probe zsh outlived the interruption");
   });
 
   test("does not wait for background jobs that keep the key pipe open", async () => {
@@ -332,7 +383,7 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
   });
 
   test("ignores an invalid OAI_SEARCH_ZSHRC_TIMEOUT_MS", async () => {
-    for (const bad of ["-5", "99999999999", "abc"]) {
+    for (const bad of ["-5", "30000", "abc"]) {
       const home = fakeHome("export OPENAI_API_KEY=sk-test-timeout\n");
       const { client, stderr } = await connect(home, { OAI_SEARCH_ZSHRC_TIMEOUT_MS: bad });
       try {
@@ -343,5 +394,80 @@ describe("launcher", { skip: !hasZsh && "zsh is not installed" }, () => {
         await client.close();
       }
     }
+  });
+
+  test("logs an interruption by SIGTERM during the probe", { timeout: 20_000 }, async () => {
+    const home = fakeHome("print $$ > $HOME/zsh.pid\nsleep 30\n");
+    const child = spawn(process.execPath, [launcher], { env: launcherEnv(home), stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    const zshPid = Number(await waitForFile(path.join(home, "zsh.pid")));
+    child.kill("SIGTERM");
+    const [, signal] = await new Promise((r) => child.on("exit", (c, s) => r([c, s])));
+    assert.equal(signal, "SIGTERM");
+    assert.match(stderr, /error: interrupted by SIGTERM while reading ~\/.zshrc/);
+    const [entry] = records(home);
+    assert.equal(entry.source, "none");
+    assert.match(entry.reason, /interrupted by SIGTERM/);
+    assert.ok(await waitDead(zshPid), "the probe zsh outlived the launcher");
+  });
+
+  test("keeps logging at info when LOG_LEVEL names an Object.prototype member", async () => {
+    const home = fakeHome("export OPENAI_API_KEY=sk-test-proto\n");
+    const { client, stderr } = await connect(home, { LOG_LEVEL: "constructor" });
+    try {
+      await client.listTools();
+      assert.match(stderr(), /info: OPENAI_API_KEY loaded from ~\/.zshrc/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("expands ~ in OAI_SEARCH_LAUNCHER_LOG and refuses a FIFO without blocking", { timeout: 20_000 }, async () => {
+    const home = fakeHome("export OPENAI_API_KEY=sk-test-logpath\n");
+    const tilde = await connect(home, { OAI_SEARCH_LAUNCHER_LOG: "~/logs/launcher.log" });
+    await tilde.client.close();
+    assert.equal(JSON.parse(readFileSync(path.join(home, "logs", "launcher.log"), "utf8").trim()).source, "zshrc");
+
+    const fifo = path.join(home, "fifo.log");
+    assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+    const { client, stderr } = await connect(home, { OAI_SEARCH_LAUNCHER_LOG: fifo });
+    try {
+      await client.listTools();
+      assert.match(stderr(), /not logging to .*fifo\.log: it is not a regular file/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("refuses a malformed inherited key instead of falling back to it", () => {
+    const home = fakeHome("# no key\n");
+    const run = spawnSync(process.execPath, [launcher], {
+      env: launcherEnv(home, { OPENAI_API_KEY: "sk-test a" }),
+      input: "",
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /inherited environment contains whitespace/);
+    assert.equal(records(home)[0].source, "none");
+  });
+
+  test("reports a missing server build clearly and logs it", () => {
+    const home = fakeHome("export OPENAI_API_KEY=sk-test-nobuild\n");
+    const copy = path.join(home, "pkg", "bin");
+    mkdirSync(copy, { recursive: true });
+    for (const file of ["oai-search-mcp.mjs", "zshrc-key.mjs"]) copyFileSync(path.join(here, file), path.join(copy, file));
+    const run = spawnSync(process.execPath, [path.join(copy, "oai-search-mcp.mjs")], {
+      env: launcherEnv(home),
+      input: "",
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /error: could not load the server .*run `pnpm build`/);
+    const [entry] = records(home);
+    assert.equal(entry.source, "zshrc");
+    assert.ok(entry.serverError, "the log has no serverError");
   });
 });
